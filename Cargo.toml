@@ -21,5 +21,9 @@ bincode = "1.1"
 criterion = "0.5"
 
 [[bench]]
-name = "bench"
+name = "op"
+harness = false
+
+[[bench]]
+name = "new"
 harness = false
