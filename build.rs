@@ -1,11 +1,11 @@
-use std::env;
 use std::fs::File;
 use std::io::Write;
-use std::mem;
 use std::path::Path;
 
-fn log2(x: usize) -> usize {
-    mem::size_of::<usize>() * 8 - (x.leading_zeros() as usize) - 1
+use indoc::formatdoc;
+
+const fn log2(x: u64) -> u32 {
+    (u64::BITS - 1) - (x | 1).leading_zeros()
 }
 
 const SBLOCK_WIDTH: usize = 64;
@@ -21,25 +21,27 @@ fn main() {
     }
 
     let mut code_size = vec![0; SBLOCK_WIDTH + 1];
+
     code_size[0] = 0;
     code_size[SBLOCK_WIDTH] = 0;
+
     for n in 1..SBLOCK_WIDTH {
-        let size = log2((combination[SBLOCK_WIDTH][n] - 1) as usize) + 1;
+        let size = log2(combination[SBLOCK_WIDTH][n] - 1) as usize + 1;
         code_size[n] = if size <= MAX_CODE_SIZE {
             size
         } else {
             SBLOCK_WIDTH
-        };
+        } as u8;
     }
 
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let out_path = Path::new(&out_dir).join("const.rs");
+    let out_dir = "src";
+    let out_path = Path::new(&out_dir).join("tables.rs");
     let mut f = File::create(&out_path).unwrap();
 
     f.write_all(
-        format!(
-            "const COMBINATION: [[u64; {size}]; {size}] = {:?};
-            const CODE_SIZE: [u64; {size}] = {:?};",
+        formatdoc!(
+            "pub const COMBINATION: [[u64; {size}]; {size}] = {:?};
+            pub const CODE_SIZE: [u8; {size}] = {:?};",
             combination,
             code_size,
             size = SBLOCK_WIDTH + 1
