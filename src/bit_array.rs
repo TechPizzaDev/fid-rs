@@ -78,6 +78,11 @@ impl BitArray {
         self.blocks.capacity() as u64 * BLOCK_SIZE
     }
 
+    /// Shrinks the capacity of the array as much as possible.
+    pub fn shrink_to_fit(&mut self) {
+        self.blocks.shrink_to_fit();
+    }
+
     /// Sets the bit at position `i` to `b`.
     ///
     /// # Examples
@@ -107,7 +112,7 @@ impl BitArray {
     /// Gets the bit at position `i`.
     ///
     /// # Panics
-    /// Panics if the specified position exceeds the capacity.
+    /// * Position `i` exceeds the capacity.
     pub fn get_bit(&self, i: u64) -> bool {
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
@@ -118,7 +123,7 @@ impl BitArray {
     /// Sets the slice of size `slice_size` at position `i`.
     ///
     /// # Panics
-    /// Panics if `slice_size` is greater than 64.
+    /// * `slice_size` is greater than 64.
     pub fn set_slice(&mut self, i: u64, slice_size: u64, slice: u64) {
         debug_assert!(slice_size <= 64);
         if slice_size == 0 {
@@ -159,7 +164,8 @@ impl BitArray {
     /// Gets the slice of size `slice_size` at position `i`.
     ///
     /// # Panics
-    /// Panics if the end position of the slice exceeds the capacity or `slice_size` is greater than 64.
+    /// * End position of the slice exceeds the capacity.
+    /// * `slice_size` is greater than 64.
     pub fn get_slice(&self, i: u64, slice_size: u64) -> u64 {
         debug_assert!(slice_size <= 64);
         debug_assert!(i + slice_size <= self.len());
@@ -181,18 +187,53 @@ impl BitArray {
     }
 
     /// Gets the `i`-th word of size `word_size`.
+    ///
+    /// # Panics
+    /// * End position of the word exceeds the capacity.
+    /// * `word_size` is greater than 64.
     pub fn get_word(&self, i: u64, word_size: u64) -> u64 {
         self.get_slice(i * word_size, word_size)
     }
 
+    /// Reserves capacity for at least `additional` more bits.
+    /// 
+    /// * May reserve more space to speculatively avoid frequent reallocations. 
+    /// * Capacity will become greater than or equal to `self.len() + additional`. 
+    /// * Does nothing if capacity is already sufficient.
+    pub fn reserve(&mut self, additional: u64) {
+        self.blocks.reserve(len_to_blocks(additional) as usize);
+    }
+
+    /// Reserves capacity for at least `additional` more bits.
+    /// 
+    /// * Unlike [`reserve`], this will not deliberately over-allocate to speculatively avoid frequent allocations. 
+    /// * Capacity will become greater than or equal to `self.len() + additional`
+    ///   (the allocator may give more space than requested). 
+    /// * Does nothing if the capacity is already sufficient.
+    /// 
+    /// [`reserve`]: BitArray::reserve
+    pub fn reserve_exact(&mut self, additional: u64) {
+        self.blocks
+            .reserve_exact(len_to_blocks(additional) as usize);
+    }
+
     /// Resizes the array in-place so that `len` is equal to `new_len`.
     ///
-    /// If `new_len` is greater than `len`, the array is extended by the difference, with each additional slot filled with `b`.
-    /// If `new_len` is less than `len`, the array is simply truncated.
+    /// * If `new_len` is greater than `len`, the array is extended by the difference, 
+    ///   with each additional slot filled with `b`.
+    /// * If `new_len` is less than `len`, the array is simply truncated.
     #[cold]
     pub fn resize(&mut self, new_len: u64, b: bool) {
         self.blocks
             .resize(len_to_blocks(new_len) as usize, bit_to_block(b));
+    }
+
+    /// Shortens the array, keeping the first `new_len` bits and dropping the rest.
+    ///
+    /// * If `new_len` is greater or equal to `len`, this has no effect.
+    /// * This has no effect on the allocated capacity.
+    pub fn truncate(&mut self, new_len: u64) {
+        self.blocks.truncate(len_to_blocks(new_len) as usize);
     }
 }
 
