@@ -22,6 +22,14 @@ const fn len_to_blocks(len: u64) -> u64 {
     (len + BLOCK_SIZE - 1) / BLOCK_SIZE
 }
 
+fn pack_block(slice: &[bool]) -> Block {
+    debug_assert!(slice.len() <= Block::BITS as usize);
+    slice
+        .into_iter()
+        .enumerate()
+        .fold(0, |acc, (i, b)| acc | (*b as Block) << i)
+}
+
 #[macro_export]
 macro_rules! bit_arr {
     () => (
@@ -161,6 +169,40 @@ impl BitArray {
         self.set_slice(i * word_size, word_size, word);
     }
 
+    /// Sets the `slice` at position `i`.
+    pub fn set_bit_slice(&mut self, i: u64, slice: &[bool]) {
+        let new_len = i + slice.len() as u64;
+        if new_len > self.len() {
+            self.resize(new_len, false);
+        }
+
+        let k = i / BLOCK_SIZE;
+        let p = i % BLOCK_SIZE;
+        let mid = BLOCK_SIZE - p;
+
+        let tail = if let Some((head, slice)) = slice.split_at_checked(mid as usize) {
+            let chunks = slice.chunks_exact(BLOCK_SIZE as usize);
+            let tail = chunks.remainder();
+
+            self.set_slice(i, head.len() as u64, pack_block(head));
+
+            let view = &mut self.blocks[k as usize + 1..];
+            for (i, chunk) in chunks.enumerate() {
+                view[i] = pack_block(chunk);
+            }
+
+            tail
+        } else {
+            slice
+        };
+
+        self.set_slice(
+            new_len - tail.len() as u64,
+            tail.len() as u64,
+            pack_block(tail),
+        );
+    }
+
     /// Gets the slice of size `slice_size` at position `i`.
     ///
     /// # Panics
@@ -246,6 +288,14 @@ impl fmt::Debug for BitArray {
     }
 }
 
+impl From<&[bool]> for BitArray {
+    fn from(value: &[bool]) -> Self {
+        let mut arr = Self::new();
+        arr.set_bit_slice(0, value);
+        arr
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +361,21 @@ mod tests {
         assert_eq!(ba.blocks.len(), 3);
         ba.resize(BLOCK_SIZE + 3, false);
         assert_eq!(ba.blocks.len(), 2);
+    }
+
+    #[test]
+    fn init_from_bools() {
+        let slice = &mut [false; 128];
+        for i in 0..slice.len() {
+            slice[i] = i % 3 == 0;
+        }
+
+        let mut arr = BitArray::new();
+        arr.set_bit_slice(1, slice);
+
+        assert_eq!(arr.get_bit(0), false);
+        for i in 1..slice.len() {
+            assert_eq!(arr.get_bit(i as u64), slice[i - 1]);
+        }
     }
 }
