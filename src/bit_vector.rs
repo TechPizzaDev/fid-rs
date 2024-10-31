@@ -189,21 +189,26 @@ impl BitVector {
         self.len += 1;
 
         if self.len % SBLOCK_WIDTH == 0 {
-            let last_sblock = self.last_sblock_bits.count_ones();
-            let last_sblock_pos = self.len / SBLOCK_WIDTH - 1;
-            self.sblocks
-                .set_word(last_sblock_pos, SBLOCK_SIZE, last_sblock as u64);
+            self.push_blocks();
+        }
+    }
 
-            let (index, index_size) = encode(self.last_sblock_bits, last_sblock as usize);
-            self.indices.set_slice(self.pointer, index_size, index);
-            self.pointer += index_size;
+    #[cold]
+    fn push_blocks(&mut self) {
+        let last_sblock = self.last_sblock_bits.count_ones();
+        let last_sblock_pos = self.len / SBLOCK_WIDTH - 1;
+        self.sblocks
+            .set_word(last_sblock_pos, SBLOCK_SIZE, last_sblock as u64);
 
-            self.last_sblock_bits = 0;
+        let (index, index_size) = encode(self.last_sblock_bits, last_sblock as usize);
+        self.indices.set_slice(self.pointer, index_size, index);
+        self.pointer += index_size;
 
-            if self.len % LBLOCK_WIDTH == 0 {
-                self.lblocks.push(self.ones);
-                self.pointers.push(self.pointer);
-            }
+        self.last_sblock_bits = 0;
+
+        if self.len % LBLOCK_WIDTH == 0 {
+            self.lblocks.push(self.ones);
+            self.pointers.push(self.pointer);
         }
     }
 
