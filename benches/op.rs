@@ -8,15 +8,15 @@ use criterion::{black_box, BenchmarkId, Criterion, Throughput};
 use fid::{BitVector, FID};
 use rand::{Rng, SeedableRng, StdRng};
 
-const SIZES: [u64; 2] = [1 << 20, 1 << 24];
+const SIZES: [u64; 2] = [1 << 16, 1 << 19];
 const PERC: [f64; 3] = [0.01, 0.5, 0.99];
 
 pub fn bench_rank1(c: &mut Criterion) {
     for n in SIZES {
         for p in PERC {
             let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-            let mut bv = BitVector::new();
-            let mut indices = Vec::new();
+            let mut bv = BitVector::with_odds(n, p);
+            let mut indices = Vec::with_capacity(n as usize);
             for _ in 0..n {
                 let b = rng.gen_bool(p);
                 bv.push(b);
@@ -45,7 +45,7 @@ pub fn bench_select1(c: &mut Criterion) {
     for n in SIZES {
         for p in PERC {
             let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-            let mut bv = BitVector::new();
+            let mut bv = BitVector::with_odds(n, p);
             let mut rank = 0;
             for _ in 0..n {
                 let b = rng.gen_bool(p);
@@ -53,7 +53,7 @@ pub fn bench_select1(c: &mut Criterion) {
                 rank += b as u64;
             }
 
-            let mut indices = Vec::new();
+            let mut indices = Vec::with_capacity(n as usize);
             for _ in 0..n {
                 indices.push(rng.gen_range(0, rank));
             }

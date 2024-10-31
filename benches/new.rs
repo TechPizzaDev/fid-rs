@@ -10,7 +10,7 @@ use criterion::{BenchmarkId, Criterion, Throughput};
 use fid::BitVector;
 use rand::{Rng, SeedableRng, StdRng};
 
-const SIZES: [u64; 2] = [1 << 18, 1 << 20];
+const SIZES: [u64; 2] = [1 << 16, 1 << 19];
 const PERC: [f64; 3] = [0.01, 0.5, 0.99];
 
 pub fn bench_push(c: &mut Criterion) {
@@ -30,7 +30,7 @@ pub fn bench_push(c: &mut Criterion) {
                 &data,
                 |b, data| {
                     b.iter_with_large_drop(|| {
-                        let mut bv = BitVector::with_capacity(n);
+                        let mut bv = BitVector::with_odds(n, p);
                         for b in data {
                             bv.push(*b);
                         }
