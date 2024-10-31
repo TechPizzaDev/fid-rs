@@ -103,8 +103,8 @@ impl BitVector {
 
     fn with_odds_and_code_size(
         capacity: u64,
-        true_odds: f32,
-        false_odds: f32,
+        true_odds: f64,
+        false_odds: f64,
         code_size: u32,
     ) -> Self {
         if capacity == 0 {
@@ -114,7 +114,7 @@ impl BitVector {
         let sblock_len = capacity.div_ceil(SBLOCK_WIDTH);
         let lblock_len = capacity.div_ceil(LBLOCK_WIDTH) as usize;
 
-        let select_units = capacity.div_ceil(SELECT_UNIT_NUM) as f32;
+        let select_units = capacity.div_ceil(SELECT_UNIT_NUM) as f64;
         let predicted_one_units = (select_units * true_odds).ceil() as usize;
         let predicted_zero_units = (select_units * false_odds).ceil() as usize;
 
@@ -133,11 +133,11 @@ impl BitVector {
     }
 
     /// Interpolate estimates for code size. Underlying lookup is generated at build.
-    fn get_avg_code_size(true_odds: f32) -> u32 {
-        let pivot = (AVG_CODE_SIZE.len() - 1) as f32 * true_odds;
+    fn get_avg_code_size(true_odds: f64) -> u32 {
+        let pivot = (AVG_CODE_SIZE.len() - 1) as f64 * true_odds;
         let idx = pivot as usize;
-        let a = *AVG_CODE_SIZE.get(idx + 0).unwrap_or(&0) as f32;
-        let b = *AVG_CODE_SIZE.get(idx + 1).unwrap_or(&0) as f32;
+        let a = *AVG_CODE_SIZE.get(idx + 0).unwrap_or(&0) as f64;
+        let b = *AVG_CODE_SIZE.get(idx + 1).unwrap_or(&0) as f64;
         let t = pivot % 1.0;
         let lerped = a * (1.0 - t) + b * t;
         return lerped.ceil() as u32;
@@ -153,7 +153,7 @@ impl BitVector {
         ///
         /// Probabilities around `0.5` represent the highest entropy and
         /// allocate the maximum required since it is unlikely to compress.
-        odds: f32,
+        odds: f64,
     ) -> Self {
         let true_odds = odds.clamp(0.0, 1.0);
         let false_odds = 1.0 - true_odds;
@@ -684,7 +684,7 @@ mod tests {
         for &p in TEST_PROB {
             for &n in TEST_SIZE {
                 let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-                let mut bv = BitVector::with_odds(n, p as f32);
+                let mut bv = BitVector::with_odds(n, p);
                 for _ in 0..n {
                     let b = rng.gen_bool(p);
                     bv.push(b);

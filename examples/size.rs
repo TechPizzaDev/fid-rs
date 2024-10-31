@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng, StdRng};
 
 fn generate_random_vector(n: u64, p: f64) -> BitVector {
     let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-    let mut bv = BitVector::with_odds(n, p as f32);
+    let mut bv = BitVector::with_odds(n, p);
     for _ in 0..n {
         let b = rng.gen_bool(p);
         bv.push(b);
