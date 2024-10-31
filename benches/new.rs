@@ -30,7 +30,7 @@ pub fn bench_push(c: &mut Criterion) {
                 &data,
                 |b, data| {
                     b.iter_with_large_drop(|| {
-                        let mut bv = BitVector::new();
+                        let mut bv = BitVector::with_capacity(n);
                         for b in data {
                             bv.push(*b);
                         }

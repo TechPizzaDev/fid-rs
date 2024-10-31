@@ -10,13 +10,10 @@
 //! # Basic usage
 //!
 //! ```
-//! use fid::{BitVector, FID};
+//! use fid::{bit_vec, FID};
 //!
-//! let mut bv = BitVector::new();
 //! // 01101101
-//! bv.push(false); bv.push(true); bv.push(true); bv.push(false);
-//! bv.push(true); bv.push(true); bv.push(false); bv.push(true);
-//!
+//! let mut bv = bit_vec![false, true, true, false, true, true, false, true];
 //! assert_eq!(bv.rank0(5), 2);
 //! assert_eq!(bv.rank1(5), 3);
 //! assert_eq!(bv.select0(2), 6);
@@ -25,12 +22,16 @@
 //!
 //! # About implementation
 //!
-//! Compression and computation algorithms for `BitVector` are originally from [1] and its practical implementation ideas are from [2].
+//! Compression and computation algorithms for `BitVector` are
+//! originally from [1] and its practical implementation ideas are from [2].
 //!
-//! [1] Gonzalo Navarro and Eliana Providel. 2012. Fast, small, simple rank/select on bitmaps. In Proceedings of the 11th international conference on Experimental Algorithms (SEA'12), Ralf Klasing (Ed.). Springer-Verlag, Berlin, Heidelberg, 295-306. DOI=http://dx.doi.org/10.1007/978-3-642-30850-5_26
+//! [1] Gonzalo Navarro and Eliana Providel. 2012. Fast, small, simple rank/select on bitmaps.
+//! In Proceedings of the 11th international conference on Experimental Algorithms (SEA'12),
+//! Ralf Klasing (Ed.). Springer-Verlag, Berlin, Heidelberg, 295-306.
+//! DOI=http://dx.doi.org/10.1007/978-3-642-30850-5_26
 //!
-//! [2] rsdic by Daisuke Okanohara. [https://github.com/hillbig/rsdic](https://github.com/hillbig/rsdic)
-#![allow(clippy::unreadable_literal)]
+//! [2] rsdic by Daisuke Okanohara.
+//! [https://github.com/hillbig/rsdic](https://github.com/hillbig/rsdic)
 
 mod bit_array;
 mod bit_vector;
