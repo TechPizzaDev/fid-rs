@@ -13,7 +13,13 @@ const fn log2(x: u64) -> u32 {
 const SBLOCK_WIDTH: usize = 64;
 const MAX_CODE_SIZE: usize = 48;
 
+/// Padding the arrays eliminates bound checks and allows unrolling around 7-bit codewords;
+/// lookups outside the range are invalid and simply return zero. 
+const PADDED_WIDTH: usize = 1 << 7;
+
 fn main() {
+    assert!(PADDED_WIDTH >= SBLOCK_WIDTH + 1);
+    
     let mut combination = vec![vec![0u64; SBLOCK_WIDTH + 1]; SBLOCK_WIDTH + 1];
     for n in 0..=SBLOCK_WIDTH {
         combination[n][0] = 1;
@@ -22,13 +28,8 @@ fn main() {
         }
     }
 
-    let mut code_size = vec![0; SBLOCK_WIDTH + 1];
-    let mut avg_code_size = vec![0; SBLOCK_WIDTH + 1];
-
-    code_size[0] = 0;
-    avg_code_size[0] = 0;
-    code_size[SBLOCK_WIDTH] = 0;
-    avg_code_size[SBLOCK_WIDTH] = 0;
+    let mut code_size = vec![0; PADDED_WIDTH];
+    let mut avg_code_size = vec![0; PADDED_WIDTH];
 
     for n in 1..SBLOCK_WIDTH {
         let size = log2(combination[SBLOCK_WIDTH][n] - 1) as usize + 1;
@@ -53,11 +54,13 @@ fn main() {
         "
         pub const SBLOCK_WIDTH: u64 = {:?};
         const SIZE: usize = SBLOCK_WIDTH as usize + 1;
+        const PADDED_WIDTH: usize = {:?};
         pub const COMBINATION: [[u64; SIZE]; SIZE] = {:?};
-        pub const CODE_SIZE: [u8; SIZE] = {:?};
-        pub const AVG_CODE_SIZE: [u8; SIZE] = {:?};
+        pub const CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
+        pub const AVG_CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
         ",
         SBLOCK_WIDTH,
+        PADDED_WIDTH,
         combination,
         code_size,
         avg_code_size

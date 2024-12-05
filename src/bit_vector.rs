@@ -134,7 +134,7 @@ impl BitVector {
 
     /// Interpolate estimates for code size. Underlying lookup is generated at build.
     fn get_avg_code_size(true_odds: f64) -> u32 {
-        let pivot = (AVG_CODE_SIZE.len() - 1) as f64 * true_odds;
+        let pivot = SBLOCK_WIDTH as f64 * true_odds;
         let idx = pivot as usize;
         let a = *AVG_CODE_SIZE.get(idx + 0).unwrap_or(&0) as f64;
         let b = *AVG_CODE_SIZE.get(idx + 1).unwrap_or(&0) as f64;
@@ -163,7 +163,7 @@ impl BitVector {
 
     /// Constructs a new, empty [`BitVector`] with at least the specified capacity.
     ///
-    /// Equivalent to [`with_odds`] with odds `0.5`.
+    /// Equivalent to [`with_odds`] with odds `0.5` (highest entropy).
     ///
     /// [`with_odds`]: BitVector::with_odds
     pub fn with_capacity(capacity: u64) -> Self {
@@ -270,6 +270,7 @@ impl FID for BitVector {
         if excess <= last_sblock_width {
             return (self.last_sblock_bits >> (last_sblock_width - excess)) & 1 == 1;
         }
+
         let lblock_pos = i / LBLOCK_WIDTH;
         let sblock_start_pos = lblock_pos * (LBLOCK_WIDTH / SBLOCK_WIDTH);
         let sblock_end_pos = i / SBLOCK_WIDTH;
@@ -279,7 +280,7 @@ impl FID for BitVector {
             let k = self.sblocks.get_word(j, SBLOCK_SIZE);
             pointer += CODE_SIZE[k as usize] as u64;
         }
-
+        
         let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE);
         let code_size = CODE_SIZE[sblock as usize] as u64;
         let index = self.indices.get_slice(pointer, code_size);
@@ -298,8 +299,8 @@ impl FID for BitVector {
         let excess = self.len - i;
         let last_sblock_width = self.len % SBLOCK_WIDTH;
         if excess <= last_sblock_width {
-            return self.ones
-                - u64::from((self.last_sblock_bits >> (last_sblock_width - excess)).count_ones());
+            let last_ones = (self.last_sblock_bits >> (last_sblock_width - excess)).count_ones();
+            return self.ones - last_ones as u64;
         }
 
         let lblock_pos = i / LBLOCK_WIDTH;
@@ -316,6 +317,7 @@ impl FID for BitVector {
         let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE);
         let code_size = CODE_SIZE[sblock as usize] as u64;
         let index = self.indices.get_slice(pointer, code_size);
+
         rank + decode_rank1(index, sblock as usize, i - sblock_end_pos * SBLOCK_WIDTH)
     }
 
@@ -325,8 +327,7 @@ impl FID for BitVector {
         }
 
         let mut lblock_pos = self.get_unit(true, r);
-        let lblock_len = self.lblocks.len();
-        while lblock_pos < lblock_len {
+        while lblock_pos < self.lblocks.len() {
             let lblock = self.lblocks[lblock_pos];
             if lblock >= r {
                 break;
@@ -367,8 +368,7 @@ impl FID for BitVector {
         }
 
         let mut lblock_pos = self.get_unit(false, r);
-        let lblock_len = self.lblocks.len();
-        while lblock_pos < lblock_len {
+        while lblock_pos < self.lblocks.len() {
             let lblock = LBLOCK_WIDTH * (lblock_pos as u64 + 1) - self.lblocks[lblock_pos];
             if lblock >= r {
                 break;
@@ -449,49 +449,58 @@ fn select0_raw(mut bits: u64, mut r: usize) -> u64 {
     64
 }
 
-fn encode(bits: u64, k: usize) -> (u64, u64) {
+#[inline(always)]
+#[roxygen]
+/// Access [`COMBINATION`] without bounds checking.  
+/// Asserting conditions for skipping bound checks allows
+/// loops to be unrolled further and without a panic branch per iteration.
+unsafe fn get_combination_size_unchecked(
+    /// Combination index.
+    c: u64,
+    /// Size index.
+    s: usize,
+) -> u64 {
+    debug_assert!(c <= SBLOCK_WIDTH);
+    debug_assert!(s <= SBLOCK_WIDTH as usize);
+
+    let sizes = &COMBINATION[(SBLOCK_WIDTH - c - 1) as usize];
+    unsafe { *sizes.get_unchecked(s) }
+}
+
+#[roxygen]
+/// Encode an integer using a table of combinations.
+#[arguments_section]
+/// # Panics
+/// `k` exceeds the count of ones in `bits`.
+fn encode(
+    /// Value to encode.
+    bits: u64,
+    /// Count of ones in `bits`.
+    k: usize,
+) -> (u64, u64) {
+    debug_assert!(bits.count_ones() as usize == k);
+
     let code_size = CODE_SIZE[k] as u64;
     if code_size == SBLOCK_WIDTH {
         return (bits, code_size);
     }
+
     let mut l = 0;
     let mut code = 0;
     for i in 0..SBLOCK_WIDTH {
         if (bits >> i) & 1 > 0 {
-            code += COMBINATION[(SBLOCK_WIDTH - i - 1) as usize][k - l];
+            // SAFETY: `bits` assert ensures `l` will not exceed `k`
+            code += unsafe { get_combination_size_unchecked(i, k - l) };
             l += 1;
-            if l == k {
-                break;
-            }
         }
     }
     (code, code_size)
 }
 
-#[allow(dead_code)]
-fn decode(mut index: u64, k: usize) -> u64 {
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return index;
-    }
-
-    let mut l = 0;
-    let mut bits = 0;
-    for i in 0..SBLOCK_WIDTH {
-        let base = COMBINATION[(SBLOCK_WIDTH - i - 1) as usize][k - l];
-        if index >= base {
-            bits |= 1 << i;
-            index -= base;
-            l += 1;
-            if l == k {
-                break;
-            }
-        }
-    }
-    bits
-}
-
 fn decode_rank1(mut index: u64, k: usize, p: u64) -> u64 {
+    assert!(k <= SBLOCK_WIDTH as usize);
+    assert!(p <= SBLOCK_WIDTH);
+
     let code_size = CODE_SIZE[k] as u64;
     if code_size == SBLOCK_WIDTH {
         return (index & ((1 << p) - 1)).count_ones() as u64;
@@ -499,7 +508,9 @@ fn decode_rank1(mut index: u64, k: usize, p: u64) -> u64 {
 
     let mut l = 0;
     for i in 0..p {
-        let base = COMBINATION[(SBLOCK_WIDTH - i - 1) as usize][k - l];
+        // SAFETY: `k` and `p` asserts
+        let base = unsafe { get_combination_size_unchecked(i, k - l) };
+
         if index >= base {
             index -= base;
             l += 1;
@@ -512,6 +523,8 @@ fn decode_rank1(mut index: u64, k: usize, p: u64) -> u64 {
 }
 
 fn decode_select1(mut index: u64, k: usize, r: usize) -> u64 {
+    assert!(k <= SBLOCK_WIDTH as usize);
+
     let code_size = CODE_SIZE[k] as u64;
     if code_size == SBLOCK_WIDTH {
         return select1_raw(index, r);
@@ -519,7 +532,8 @@ fn decode_select1(mut index: u64, k: usize, r: usize) -> u64 {
 
     let mut l = 0;
     for i in 0..SBLOCK_WIDTH {
-        let base = COMBINATION[(SBLOCK_WIDTH - i - 1) as usize][k - l];
+        // SAFETY: `k` assert
+        let base = unsafe { get_combination_size_unchecked(i, k - l) };
 
         if index >= base {
             if l == r {
@@ -533,43 +547,52 @@ fn decode_select1(mut index: u64, k: usize, r: usize) -> u64 {
 }
 
 fn decode_select0(mut index: u64, k: usize, r: usize) -> u64 {
+    assert!(k <= SBLOCK_WIDTH as usize);
+
     let code_size = CODE_SIZE[k] as u64;
     if code_size == SBLOCK_WIDTH {
         return select0_raw(index, r);
     }
 
     let mut l = 0;
-    for i in 0..(SBLOCK_WIDTH as usize) {
-        let base = COMBINATION[SBLOCK_WIDTH as usize - i - 1][k - l];
+    for i in 0..SBLOCK_WIDTH {
+        // SAFETY: `k` assert
+        let base = unsafe { get_combination_size_unchecked(i, k - l) };
 
         if index >= base {
             index -= base;
             l += 1;
-        } else if i - l == r {
-            return i as u64;
+        } else if i as usize - l == r {
+            return i;
         }
     }
     64
 }
 
 fn decode_bit(mut index: u64, k: usize, p: usize) -> bool {
+    assert!(k <= SBLOCK_WIDTH as usize);
+    assert!(p <= SBLOCK_WIDTH as usize);
+
     let code_size = CODE_SIZE[k] as u64;
     if code_size == SBLOCK_WIDTH {
         return (index >> p) & 1 == 1;
     }
 
-    let mut l = 0;
-    for i in 0..p {
-        let base = COMBINATION[SBLOCK_WIDTH as usize - i - 1][k - l];
-        if index >= base {
-            index -= base;
-            l += 1;
-            if l == k {
-                break;
+    // SAFETY: `k` and `p` asserts
+    unsafe {
+        let mut l = 0;
+        for i in 0..p {
+            let base = get_combination_size_unchecked(i as u64, k - l);
+            if index >= base {
+                index -= base;
+                l += 1;
+                if l == k {
+                    break;
+                }
             }
         }
+        index >= get_combination_size_unchecked(p as u64, k - l)
     }
-    index >= COMBINATION[SBLOCK_WIDTH as usize - p - 1][k - l]
 }
 
 #[cfg(test)]
@@ -579,12 +602,43 @@ mod tests {
     use super::*;
     use crate::bit_arr;
 
+    fn decode(mut index: u64, k: usize) -> u64 {
+        let code_size = CODE_SIZE[k] as u64;
+        if code_size == SBLOCK_WIDTH {
+            return index;
+        }
+
+        let mut l = 0;
+        let mut bits = 0;
+        for i in 0..SBLOCK_WIDTH {
+            let base = COMBINATION[(SBLOCK_WIDTH - i - 1) as usize][k - l];
+            if index >= base {
+                bits |= 1 << i;
+                index -= base;
+                l += 1;
+                if l == k {
+                    break;
+                }
+            }
+        }
+        bits
+    }
+
     #[test]
-    fn test_encode_decode() {
+    fn test_encode_decode_rng() {
         let n = 1000;
         let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
         for _ in 0..n {
             let bits: u64 = rng.gen();
+            let k = bits.count_ones() as usize;
+            assert_eq!(decode(encode(bits, k).0, k), bits);
+        }
+    }
+
+    #[test]
+    fn test_encode_decode_log() {
+        for i in 0..u64::BITS {
+            let bits: u64 = !0 >> i;
             let k = bits.count_ones() as usize;
             assert_eq!(decode(encode(bits, k).0, k), bits);
         }
@@ -606,6 +660,8 @@ mod tests {
 
     #[test]
     fn test_decode_select1() {
+        assert_eq!(decode_select1(encode(u64::MAX, 64).0, 64, 64), 64);
+
         let n = 100;
         let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
         for _ in 0..n {
@@ -627,6 +683,8 @@ mod tests {
 
     #[test]
     fn test_decode_select0() {
+        assert_eq!(decode_select0(encode(!0u64 >> 32, 32).0, 32, 64), 64);
+
         let n = 100;
         let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
         for _ in 0..n {

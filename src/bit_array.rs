@@ -9,7 +9,7 @@ use mem_dbg::{MemDbg, MemSize};
 type Block = u64;
 const BLOCK_SIZE: u64 = Block::BITS as u64;
 
-const fn bit_to_block(b: bool) -> Block {
+const fn splat_bit_to_block(b: bool) -> Block {
     if b {
         !0
     } else {
@@ -18,8 +18,8 @@ const fn bit_to_block(b: bool) -> Block {
 }
 
 /// Scale bit-length to block-length, rounded up to the next block.
-const fn len_to_blocks(len: u64) -> u64 {
-    (len + BLOCK_SIZE - 1) / BLOCK_SIZE
+fn blocks_for_bits(len: u64) -> Option<usize> {
+    usize::try_from((len + BLOCK_SIZE - 1) / BLOCK_SIZE).ok()
 }
 
 fn pack_block(slice: &[bool]) -> Block {
@@ -47,6 +47,7 @@ macro_rules! bit_arr {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "mem_dbg", derive(MemDbg, MemSize))]
 pub struct BitArray {
+    // TODO: don't use Vec; we don't need to track both cap and len
     blocks: Vec<Block>,
 }
 
@@ -59,16 +60,16 @@ impl BitArray {
     }
 
     pub fn from_bit(b: bool, len: u64) -> Self {
-        let n_blocks = len_to_blocks(len);
+        let block_len = blocks_for_bits(len).unwrap();
         BitArray {
-            blocks: vec![bit_to_block(b); n_blocks as usize],
+            blocks: vec![splat_bit_to_block(b); block_len],
         }
     }
 
     pub fn with_capacity(capacity: u64) -> Self {
-        let n_blocks = len_to_blocks(capacity);
+        let block_len = blocks_for_bits(capacity).unwrap();
         BitArray {
-            blocks: Vec::with_capacity(n_blocks as usize),
+            blocks: Vec::with_capacity(block_len),
         }
     }
 
@@ -76,14 +77,24 @@ impl BitArray {
         BitArray::with_capacity(word_size * capacity)
     }
 
+    /// Returns the number of blocks in the array.
+    pub fn block_len(&self) -> usize {
+        self.blocks.len()
+    }
+
     /// Returns the number of bits in the array.
     pub fn len(&self) -> u64 {
-        self.blocks.len() as u64 * BLOCK_SIZE
+        self.block_len() as u64 * BLOCK_SIZE
+    }
+
+    /// Returns the number of blocks the array can hold without reallocating.
+    pub fn block_capacity(&self) -> usize {
+        self.blocks.capacity()
     }
 
     /// Returns the number of bits the array can hold without reallocating.
     pub fn capacity(&self) -> u64 {
-        self.blocks.capacity() as u64 * BLOCK_SIZE
+        self.block_capacity() as u64 * BLOCK_SIZE
     }
 
     /// Shrinks the capacity of the array as much as possible.
@@ -104,17 +115,15 @@ impl BitArray {
     /// assert_eq!(ba.get_bit(256), true);
     /// ```
     pub fn set_bit(&mut self, i: u64, b: bool) {
-        if i >= self.len() {
-            self.resize(i + 1, false);
-        }
+        self.ensure_bit_len(i + 1);
 
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
         let mask = 1 << p;
         let value = (b as Block) << p;
 
-        let slot = &mut self.blocks[k as usize];
-        *slot = (*slot & !mask) | value;
+        // SAFETY: `ensure_bit_len()` ensures valid len
+        unsafe { self.set_block_unchecked(k as usize, value, mask) }
     }
 
     /// Gets the bit at position `i`.
@@ -137,20 +146,43 @@ impl BitArray {
         if slice_size == 0 {
             return;
         }
-        if i + slice_size > self.len() {
-            self.resize(i + slice_size, false);
-        }
+        self.ensure_bit_len(i + slice_size);
 
+        // SAFETY: `ensure_bit_len()` ensures valid len
+        unsafe { self.set_slice_unchecked(i, slice_size, slice) }
+    }
+
+    /// Mutate [`blocks`] without bound checks.
+    #[inline]
+    unsafe fn set_slice_unchecked(&mut self, i: u64, slice_size: u64, slice: u64) {
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
-        let excess = (i + slice_size).saturating_sub((k + 1) * BLOCK_SIZE);
 
-        let mask1 = slice << p;
-        self.blocks[k as usize] |= mask1;
+        self.set_block_unchecked(
+            k as usize,
+            slice << p,
+            (!0 >> (BLOCK_SIZE - slice_size)) << p,
+        );
+
+        let excess = (i + slice_size).saturating_sub((k + 1) * BLOCK_SIZE);
         if excess != 0 {
-            let mask2 = (slice >> (BLOCK_SIZE - p)) & (!0 >> (BLOCK_SIZE - excess));
-            self.blocks[k as usize + 1] |= mask2;
+            self.set_block_unchecked(
+                k as usize + 1,
+                slice >> (BLOCK_SIZE - p),
+                !0 >> (BLOCK_SIZE - excess),
+            );
         }
+    }
+
+    /// Mutate [`blocks`] without bound checks.
+    /// 
+    /// [`blocks`]: BitArray::blocks
+    #[inline(always)]  
+    unsafe fn set_block_unchecked(&mut self, k: usize, bits: u64, mask: u64) {
+        debug_assert!(k < self.blocks.len());
+
+        let slot = self.blocks.get_unchecked_mut(k);
+        *slot = (*slot & !mask) | bits;
     }
 
     /// Sets the `i`-th word of size `word_size` to `word`.
@@ -172,35 +204,38 @@ impl BitArray {
     /// Sets the `slice` at position `i`.
     pub fn set_bit_slice(&mut self, i: u64, slice: &[bool]) {
         let new_len = i + slice.len() as u64;
-        if new_len > self.len() {
-            self.resize(new_len, false);
-        }
+        self.ensure_bit_len(new_len);
 
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
         let mid = BLOCK_SIZE - p;
 
-        let tail = if let Some((head, slice)) = slice.split_at_checked(mid as usize) {
-            let chunks = slice.chunks_exact(BLOCK_SIZE as usize);
-            let tail = chunks.remainder();
+        // SAFETY: `ensure_bit_len()` ensures valid len
+        unsafe {
+            let tail = if let Some((head, slice)) = slice.split_at_checked(mid as usize) {
+                let chunks = slice.chunks_exact(BLOCK_SIZE as usize);
+                let tail = chunks.remainder();
 
-            self.set_slice(i, head.len() as u64, pack_block(head));
+                self.set_slice_unchecked(i, head.len() as u64, pack_block(head));
 
-            let view = &mut self.blocks[k as usize + 1..];
-            for (i, chunk) in chunks.enumerate() {
-                view[i] = pack_block(chunk);
-            }
+                let view = self.blocks.get_unchecked_mut(k as usize + 1..);
+                debug_assert!(chunks.len() <= view.len());
 
-            tail
-        } else {
-            slice
-        };
+                for (i, chunk) in chunks.enumerate() {
+                    *view.get_unchecked_mut(i) = pack_block(chunk);
+                }
 
-        self.set_slice(
-            new_len - tail.len() as u64,
-            tail.len() as u64,
-            pack_block(tail),
-        );
+                tail
+            } else {
+                slice
+            };
+
+            self.set_slice_unchecked(
+                new_len - tail.len() as u64,
+                tail.len() as u64,
+                pack_block(tail),
+            );
+        }
     }
 
     /// Gets the slice of size `slice_size` at position `i`.
@@ -210,7 +245,7 @@ impl BitArray {
     /// * `slice_size` is greater than 64.
     pub fn get_slice(&self, i: u64, slice_size: u64) -> u64 {
         debug_assert!(slice_size <= 64);
-        debug_assert!(i + slice_size <= self.len());
+        assert!(i + slice_size <= self.len());
 
         if slice_size == 0 {
             return 0;
@@ -219,13 +254,20 @@ impl BitArray {
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
         let excess = (i + slice_size).saturating_sub((k + 1) * BLOCK_SIZE);
-        let w1 = (self.blocks[k as usize] >> p) & (!0 >> (BLOCK_SIZE - slice_size));
-        if excess == 0 {
-            w1
-        } else {
-            let w2 = self.blocks[k as usize + 1] & (!0 >> (BLOCK_SIZE - excess));
-            w1 | w2 << (BLOCK_SIZE - p)
-        }
+
+        // SAFETY: `i + slice_size` assert
+        let bits = unsafe {
+            let w1 = *self.blocks.get_unchecked(k as usize) >> p;
+            if excess == 0 {
+                w1
+            } else {
+                let w2 = *self.blocks.get_unchecked(k as usize + 1);
+                w1 | (w2 << (BLOCK_SIZE - p))
+            }
+        };
+
+        let mask = !0 >> (BLOCK_SIZE - slice_size);
+        bits & mask
     }
 
     /// Gets the `i`-th word of size `word_size`.
@@ -237,45 +279,90 @@ impl BitArray {
         self.get_slice(i * word_size, word_size)
     }
 
-    /// Reserves capacity for at least `additional` more bits.
-    /// 
-    /// * May reserve more space to speculatively avoid frequent reallocations. 
-    /// * Capacity will become greater than or equal to `self.len() + additional`. 
-    /// * Does nothing if capacity is already sufficient.
+    /// Reserves capacity for at least `additional` more bits (rounded up to blocks).
+    ///
+    /// See [`reserve_blocks`] for details.
+    ///
+    /// [`reserve_blocks`]: BitArray::reserve_blocks
     pub fn reserve(&mut self, additional: u64) {
-        self.blocks.reserve(len_to_blocks(additional) as usize);
+        self.blocks.reserve(blocks_for_bits(additional).unwrap());
     }
 
-    /// Reserves capacity for at least `additional` more bits.
-    /// 
-    /// * Unlike [`reserve`], this will not deliberately over-allocate to speculatively avoid frequent allocations. 
-    /// * Capacity will become greater than or equal to `self.len() + additional`
-    ///   (the allocator may give more space than requested). 
-    /// * Does nothing if the capacity is already sufficient.
-    /// 
-    /// [`reserve`]: BitArray::reserve
+    /// Reserves capacity for at least `additional` more blocks.
+    ///
+    /// * May reserve more space to speculatively avoid frequent reallocations.
+    /// * Capacity will become greater than or equal to `self.len() + additional`.
+    /// * Does nothing if capacity is already sufficient.
+    pub fn reserve_blocks(&mut self, additional: usize) {
+        self.blocks.reserve(additional);
+    }
+
+    /// Reserves capacity for at least `additional` more bits (rounded up to blocks).
+    ///
+    /// See [`reserve_exact_blocks`] for details.
+    ///
+    /// [`reserve_exact_blocks`]: BitArray::reserve_exact_blocks
     pub fn reserve_exact(&mut self, additional: u64) {
         self.blocks
-            .reserve_exact(len_to_blocks(additional) as usize);
+            .reserve_exact(blocks_for_bits(additional).unwrap());
+    }
+
+    /// Reserves capacity for at least `additional` more blocks.
+    ///
+    /// * Unlike [`reserve`], this will not deliberately over-allocate to speculatively avoid frequent allocations.
+    /// * Capacity will become greater than or equal to `self.len() + additional`
+    ///   (the allocator may give more space than requested).
+    /// * Does nothing if the capacity is already sufficient.
+    ///
+    /// [`reserve`]: BitArray::reserve
+    pub fn reserve_exact_blocks(&mut self, additional: usize) {
+        self.blocks.reserve_exact(additional);
+    }
+
+    /// Resizes the array in-place so that `len` is at least `new_len` (rounded up to blocks).
+    ///
+    /// See [`resize_blocks`] for details.
+    ///
+    /// [`resize_blocks`]: BitArray::resize_blocks
+    pub fn resize(&mut self, new_len: u64, b: bool) {
+        self.resize_blocks(blocks_for_bits(new_len).unwrap(), splat_bit_to_block(b));
     }
 
     /// Resizes the array in-place so that `len` is equal to `new_len`.
     ///
-    /// * If `new_len` is greater than `len`, the array is extended by the difference, 
-    ///   with each additional slot filled with `b`.
-    /// * If `new_len` is less than `len`, the array is simply truncated.
-    #[cold]
-    pub fn resize(&mut self, new_len: u64, b: bool) {
-        self.blocks
-            .resize(len_to_blocks(new_len) as usize, bit_to_block(b));
+    /// * If `new_len` is greater than `len`, the array is extended by the difference,
+    ///   with additional blocks equal to `value`.
+    /// * If `new_len` is less than `len`, the array is truncated.
+    pub fn resize_blocks(&mut self, new_len: usize, value: Block) {
+        self.blocks.resize(new_len, value);
     }
 
-    /// Shortens the array, keeping the first `new_len` bits and dropping the rest.
+    /// Shortens the array, keeping the first `new_len` bits (rounded up to blocks) and dropping the rest.
+    ///
+    /// See [`truncate_blocks`] for details.
+    ///
+    /// [`truncate_blocks`]: BitArray::truncate_blocks
+    pub fn truncate(&mut self, new_len: u64) {
+        self.truncate_blocks(blocks_for_bits(new_len).unwrap());
+    }
+
+    /// Shortens the array, keeping the first `new_len` blocks and dropping the rest.
     ///
     /// * If `new_len` is greater or equal to `len`, this has no effect.
     /// * This has no effect on the allocated capacity.
-    pub fn truncate(&mut self, new_len: u64) {
-        self.blocks.truncate(len_to_blocks(new_len) as usize);
+    pub fn truncate_blocks(&mut self, new_len: usize) {
+        self.blocks.truncate(new_len);
+    }
+
+    fn ensure_bit_len(&mut self, len: u64) {
+        if len > self.len() {
+            resize_cold(self, len);
+        }
+        
+        #[cold]
+        fn resize_cold(_self: &mut BitArray, new_len: u64) {
+            _self.resize(new_len, false);
+        }
     }
 }
 
