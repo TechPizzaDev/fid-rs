@@ -1,14 +1,15 @@
-/// A type that supports rank and support operations.
+/// Fully Indexable Dictionary of bits that supports rank and select operations.
 pub trait FID {
+
     /// Returns the total number of bits.
     fn len(&self) -> u64;
 
-    /// Returns true if the structure is empty.
+    /// Returns true if the collection is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
     
-    /// Compute the number of bits in [0..i).
+    /// Compute the number of bits in `[0..i)`.
     fn rank(&self, b: bool, i: u64) -> u64 {
         if b {
             self.rank1(i)
@@ -17,12 +18,12 @@ pub trait FID {
         }
     }
 
-    /// Compute the number of 0s in [0..i).
+    /// Compute the number of 0s in `[0..i)`.
     fn rank0(&self, i: u64) -> u64 {
         i - self.rank1(i)
     }
 
-    /// Compute the number of 0s in [0..i).
+    /// Compute the number of 0s in `[0..i)`.
     fn rank1(&self, i: u64) -> u64 {
         i - self.rank0(i)
     }
@@ -43,17 +44,17 @@ pub trait FID {
         s
     }
 
-    /// Locate the position of the (r + 1)-th 0.
+    /// Locate the position of the `(r + 1)`-th 0.
     fn select0(&self, r: u64) -> u64 {
         self.select(false, r)
     }
 
-    /// Locate the position of the (r + 1)-th 1.
+    /// Locate the position of the `(r + 1)`-th 1.
     fn select1(&self, r: u64) -> u64 {
         self.select(true, r)
     }
 
-    /// Returns the i-th bit.
+    /// Returns the `i`-th bit.
     fn get(&self, i: u64) -> bool {
         self.rank1(i + 1) - self.rank1(i) > 0
     }
