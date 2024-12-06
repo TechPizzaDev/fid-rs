@@ -18,8 +18,8 @@ const fn splat_bit_to_block(b: bool) -> Block {
 }
 
 /// Scale bit-length to block-length, rounded up to the next block.
-fn blocks_for_bits(len: u64) -> Option<usize> {
-    usize::try_from((len + BLOCK_SIZE - 1) / BLOCK_SIZE).ok()
+fn blocks_for_bits(len: u64) -> usize {
+    usize::try_from((len + BLOCK_SIZE - 1) / BLOCK_SIZE).unwrap()
 }
 
 fn pack_block(slice: &[bool]) -> Block {
@@ -63,7 +63,7 @@ impl BitArray {
     ///
     /// Each block is set to `value`. The last block is not masked to match `len`.
     pub fn from_block(value: Block, len: u64) -> Self {
-        let block_len = blocks_for_bits(len).unwrap();
+        let block_len = blocks_for_bits(len);
         let blocks = vec![value; block_len];
         
         BitArray { blocks }
@@ -73,7 +73,7 @@ impl BitArray {
     ///
     /// The last block is masked to match `len`.
     pub fn from_bit(b: bool, len: u64) -> Self {
-        let block_len = blocks_for_bits(len).unwrap();
+        let block_len = blocks_for_bits(len);
         let mut blocks = vec![splat_bit_to_block(b); block_len];
         
         let excess = len % BLOCK_SIZE;
@@ -87,7 +87,7 @@ impl BitArray {
     }
 
     pub fn with_capacity(capacity: u64) -> Self {
-        let block_len = blocks_for_bits(capacity).unwrap();
+        let block_len = blocks_for_bits(capacity);
         BitArray {
             blocks: Vec::with_capacity(block_len),
         }
@@ -305,7 +305,7 @@ impl BitArray {
     ///
     /// [`reserve_blocks`]: BitArray::reserve_blocks
     pub fn reserve(&mut self, additional: u64) {
-        self.blocks.reserve(blocks_for_bits(additional).unwrap());
+        self.blocks.reserve(blocks_for_bits(additional));
     }
 
     /// Reserves capacity for at least `additional` more blocks.
@@ -324,7 +324,7 @@ impl BitArray {
     /// [`reserve_exact_blocks`]: BitArray::reserve_exact_blocks
     pub fn reserve_exact(&mut self, additional: u64) {
         self.blocks
-            .reserve_exact(blocks_for_bits(additional).unwrap());
+            .reserve_exact(blocks_for_bits(additional));
     }
 
     /// Reserves capacity for at least `additional` more blocks.
@@ -345,7 +345,7 @@ impl BitArray {
     ///
     /// [`resize_blocks`]: BitArray::resize_blocks
     pub fn resize(&mut self, new_len: u64, b: bool) {
-        self.resize_blocks(blocks_for_bits(new_len).unwrap(), splat_bit_to_block(b));
+        self.resize_blocks(blocks_for_bits(new_len), splat_bit_to_block(b));
     }
 
     /// Resizes the array in-place so that `len` is equal to `new_len`.
@@ -363,7 +363,7 @@ impl BitArray {
     ///
     /// [`truncate_blocks`]: BitArray::truncate_blocks
     pub fn truncate(&mut self, new_len: u64) {
-        self.truncate_blocks(blocks_for_bits(new_len).unwrap());
+        self.truncate_blocks(blocks_for_bits(new_len));
     }
 
     /// Shortens the array, keeping the first `new_len` blocks and dropping the rest.
