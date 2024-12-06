@@ -93,8 +93,9 @@ impl BitVector {
     }
 
     pub fn from_bit(b: bool, len: u64) -> Self {
-        let odds = if b { 1.0 } else { 0.0 };
-        let mut vec = Self::with_odds(len, odds);
+        let true_odds = (b as u8) as f64;
+        let false_odds = (!b as u8) as f64;
+        let mut vec = Self::with_odds_and_code_size(len, true_odds, false_odds, 0);
         for _ in 0..len {
             vec.push(b);
         }
@@ -280,7 +281,7 @@ impl FID for BitVector {
             let k = self.sblocks.get_word(j, SBLOCK_SIZE);
             pointer += CODE_SIZE[k as usize] as u64;
         }
-        
+
         let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE);
         let code_size = CODE_SIZE[sblock as usize] as u64;
         let index = self.indices.get_slice(pointer, code_size);

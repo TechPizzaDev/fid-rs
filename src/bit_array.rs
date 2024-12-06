@@ -175,9 +175,9 @@ impl BitArray {
     }
 
     /// Mutate [`blocks`] without bound checks.
-    /// 
+    ///
     /// [`blocks`]: BitArray::blocks
-    #[inline(always)]  
+    #[inline(always)]
     unsafe fn set_block_unchecked(&mut self, k: usize, bits: u64, mask: u64) {
         debug_assert!(k < self.blocks.len());
 
@@ -358,7 +358,7 @@ impl BitArray {
         if len > self.len() {
             resize_cold(self, len);
         }
-        
+
         #[cold]
         fn resize_cold(_self: &mut BitArray, new_len: u64) {
             _self.resize(new_len, false);
@@ -386,6 +386,24 @@ impl From<&[bool]> for BitArray {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic]
+    fn get_empty_slice_panic() {
+        let ba = bit_arr![false; 128];
+        ba.get_slice(129, 0);
+    }
+
+    #[test]
+    fn set_and_get_empty_slice() {
+        let mut ba = bit_arr![false; 128];
+        for i in 0..128 {
+            ba.set_slice(i, 0, 0);
+        }
+        for i in 0..128 {
+            assert_eq!(ba.get_slice(i, 0), 0);
+        }
+    }
 
     #[test]
     fn set_word_get_word() {
