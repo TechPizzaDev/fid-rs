@@ -59,11 +59,31 @@ impl BitArray {
         BitArray { blocks: Vec::new() }
     }
 
+    /// Constructs a new [`BitArray`] with `len` (rounded up to blocks).
+    ///
+    /// Each block is set to `value`. The last block is not masked to match `len`.
+    pub fn from_block(value: Block, len: u64) -> Self {
+        let block_len = blocks_for_bits(len).unwrap();
+        let blocks = vec![value; block_len];
+        
+        BitArray { blocks }
+    }
+
+    /// Constructs a new [`BitArray`] with `len` bits set to `b`.
+    ///
+    /// The last block is masked to match `len`.
     pub fn from_bit(b: bool, len: u64) -> Self {
         let block_len = blocks_for_bits(len).unwrap();
-        BitArray {
-            blocks: vec![splat_bit_to_block(b); block_len],
+        let mut blocks = vec![splat_bit_to_block(b); block_len];
+        
+        let excess = len % BLOCK_SIZE;
+        if b && excess != 0 {
+            if let Some(last) = blocks.last_mut() {
+                let mask = !0 >> (BLOCK_SIZE - excess);
+                *last &= mask;
+            }
         }
+        BitArray { blocks }
     }
 
     pub fn with_capacity(capacity: u64) -> Self {
