@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "mem_dbg")]
 use mem_dbg::{MemDbg, MemSize};
 
+use crate::util::mask_u64;
+
 type Block = u64;
 const BLOCK_SIZE: u64 = Block::BITS as u64;
 
@@ -65,7 +67,7 @@ impl BitArray {
     pub fn from_block(value: Block, len: u64) -> Self {
         let block_len = blocks_for_bits(len);
         let blocks = vec![value; block_len];
-        
+
         BitArray { blocks }
     }
 
@@ -75,12 +77,11 @@ impl BitArray {
     pub fn from_bit(b: bool, len: u64) -> Self {
         let block_len = blocks_for_bits(len);
         let mut blocks = vec![splat_bit_to_block(b); block_len];
-        
+
         let excess = len % BLOCK_SIZE;
         if b && excess != 0 {
             if let Some(last) = blocks.last_mut() {
-                let mask = !0 >> (BLOCK_SIZE - excess);
-                *last &= mask;
+                *last &= mask_u64(excess);
             }
         }
         BitArray { blocks }
@@ -157,40 +158,32 @@ impl BitArray {
         (self.blocks[k as usize] >> p) & 0b1 == 1
     }
 
-    /// Sets the slice of size `slice_size` at position `i`.
+    /// Sets the slice of size `size` at position `i`.
     ///
     /// # Panics
-    /// * `slice_size` is greater than 64.
-    pub fn set_slice(&mut self, i: u64, slice_size: u64, slice: u64) {
-        debug_assert!(slice_size <= 64);
-        if slice_size == 0 {
+    /// * `size` is greater than 64.
+    pub fn set_slice(&mut self, i: u64, size: u64, slice: u64) {
+        debug_assert!(size <= 64);
+        if size == 0 {
             return;
         }
-        self.ensure_bit_len(i + slice_size);
+        self.ensure_bit_len(i + size);
 
         // SAFETY: `ensure_bit_len()` ensures valid len
-        unsafe { self.set_slice_unchecked(i, slice_size, slice) }
+        unsafe { self.set_slice_unchecked(i, size, slice) }
     }
 
     /// Mutate [`blocks`] without bound checks.
     #[inline]
-    unsafe fn set_slice_unchecked(&mut self, i: u64, slice_size: u64, slice: u64) {
+    unsafe fn set_slice_unchecked(&mut self, i: u64, size: u64, slice: u64) {
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
 
-        self.set_block_unchecked(
-            k as usize,
-            slice << p,
-            (!0 >> (BLOCK_SIZE - slice_size)) << p,
-        );
+        self.set_block_unchecked(k as usize, slice << p, mask_u64(size) << p);
 
-        let excess = (i + slice_size).saturating_sub((k + 1) * BLOCK_SIZE);
+        let excess = (i + size).saturating_sub((k + 1) * BLOCK_SIZE);
         if excess != 0 {
-            self.set_block_unchecked(
-                k as usize + 1,
-                slice >> (BLOCK_SIZE - p),
-                !0 >> (BLOCK_SIZE - excess),
-            );
+            self.set_block_unchecked(k as usize + 1, slice >> (BLOCK_SIZE - p), mask_u64(excess));
         }
     }
 
@@ -258,24 +251,24 @@ impl BitArray {
         }
     }
 
-    /// Gets the slice of size `slice_size` at position `i`.
+    /// Gets a slice with `size` bits at position `i`.
     ///
     /// # Panics
     /// * End position of the slice exceeds the capacity.
-    /// * `slice_size` is greater than 64.
-    pub fn get_slice(&self, i: u64, slice_size: u64) -> u64 {
-        debug_assert!(slice_size <= 64);
-        assert!(i + slice_size <= self.len());
+    /// * `size` is greater than 64.
+    pub fn get_slice(&self, i: u64, size: u64) -> u64 {
+        debug_assert!(size <= 64);
+        assert!(i + size <= self.len());
 
-        if slice_size == 0 {
+        if size == 0 {
             return 0;
         }
 
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
-        let excess = (i + slice_size).saturating_sub((k + 1) * BLOCK_SIZE);
+        let excess = (i + size).saturating_sub((k + 1) * BLOCK_SIZE);
 
-        // SAFETY: `i + slice_size` assert
+        // SAFETY: `i + size` assert
         let bits = unsafe {
             let w1 = *self.blocks.get_unchecked(k as usize) >> p;
             if excess == 0 {
@@ -286,17 +279,16 @@ impl BitArray {
             }
         };
 
-        let mask = !0 >> (BLOCK_SIZE - slice_size);
-        bits & mask
+        bits & mask_u64(size)
     }
 
-    /// Gets the `i`-th word of size `word_size`.
+    /// Gets the `i`-th word with `size` bits.
     ///
     /// # Panics
     /// * End position of the word exceeds the capacity.
-    /// * `word_size` is greater than 64.
-    pub fn get_word(&self, i: u64, word_size: u64) -> u64 {
-        self.get_slice(i * word_size, word_size)
+    /// * `size` is greater than 64.
+    pub fn get_word(&self, i: u64, size: u64) -> u64 {
+        self.get_slice(i * size, size)
     }
 
     /// Reserves capacity for at least `additional` more bits (rounded up to blocks).
@@ -323,8 +315,7 @@ impl BitArray {
     ///
     /// [`reserve_exact_blocks`]: BitArray::reserve_exact_blocks
     pub fn reserve_exact(&mut self, additional: u64) {
-        self.blocks
-            .reserve_exact(blocks_for_bits(additional));
+        self.blocks.reserve_exact(blocks_for_bits(additional));
     }
 
     /// Reserves capacity for at least `additional` more blocks.
