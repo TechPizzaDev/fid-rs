@@ -8,7 +8,7 @@ pub trait FID {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     /// Compute the number of bits in `[0..i)`.
     fn rank(&self, b: bool, i: u64) -> u64 {
         if b {
@@ -18,17 +18,17 @@ pub trait FID {
         }
     }
 
-    /// Compute the number of 0s in `[0..i)`.
+    /// Compute the number of zeroes in `[0..i)`.
     fn rank0(&self, i: u64) -> u64 {
         i - self.rank1(i)
     }
 
-    /// Compute the number of 0s in `[0..i)`.
+    /// Compute the number of ones in `[0..i)`.
     fn rank1(&self, i: u64) -> u64 {
         i - self.rank0(i)
     }
 
-    /// Locate the position of the (r + 1)-th bit.
+    /// Locate the position of the `(r + 1)`-th bit.
     fn select(&self, b: bool, r: u64) -> u64 {
         let (mut s, mut e) = (0, self.len());
 
@@ -44,12 +44,12 @@ pub trait FID {
         s
     }
 
-    /// Locate the position of the `(r + 1)`-th 0.
+    /// Locate the position of the `(r + 1)`-th zero.
     fn select0(&self, r: u64) -> u64 {
         self.select(false, r)
     }
 
-    /// Locate the position of the `(r + 1)`-th 1.
+    /// Locate the position of the `(r + 1)`-th one.
     fn select1(&self, r: u64) -> u64 {
         self.select(true, r)
     }
@@ -57,5 +57,25 @@ pub trait FID {
     /// Returns the `i`-th bit.
     fn get(&self, i: u64) -> bool {
         self.rank1(i + 1) - self.rank1(i) > 0
+    }
+
+    /// Returns `size` bits starting at `i`.
+    fn get_slice(&self, i: u64, size: u64) -> u64 {
+        let mut bits = 0;
+        for j in 0..size {
+            let bit = self.get(i + j) as u64;
+            bits |= bit << j;
+        }
+        bits
+    }
+
+    /// Returns `size` bits starting at `i * size`.
+    fn get_word(&self, i: u64, size: u64) -> u64 {
+        self.get_slice(i * size, size)
+    }
+
+    /// Returns 64 bits starting at `i * 64`.
+    fn get_block(&self, i: u64) -> u64 {
+        self.get_slice(i * 64, 64)
     }
 }

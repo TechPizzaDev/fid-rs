@@ -11,20 +11,29 @@ const fn log2(x: u64) -> u32 {
 }
 
 const SBLOCK_WIDTH: usize = 64;
+const SIZE: usize = SBLOCK_WIDTH + 1;
 const MAX_CODE_SIZE: usize = 48;
 
 /// Padding the arrays eliminates bound checks and allows unrolling around 7-bit codewords;
-/// lookups outside the range are invalid and simply return zero. 
+/// lookups outside the range are invalid and simply return zero.
 const PADDED_WIDTH: usize = 1 << 7;
 
 fn main() {
-    assert!(PADDED_WIDTH >= SBLOCK_WIDTH + 1);
-    
-    let mut combination = vec![vec![0u64; SBLOCK_WIDTH + 1]; SBLOCK_WIDTH + 1];
+    assert!(PADDED_WIDTH >= SIZE);
+
+    let mut combination = Box::new([0u64; SIZE * SIZE]);
+
+    fn rank(combination: &mut [u64; SIZE * SIZE], n: usize) -> &mut [u64; SIZE] {
+        let start = n * SIZE;
+        let end = start + SIZE;
+        (&mut combination[start..end]).try_into().unwrap()
+    }
+
     for n in 0..=SBLOCK_WIDTH {
-        combination[n][0] = 1;
+        rank(&mut combination, n)[0] = 1;
         for r in 1..=n {
-            combination[n][r] = combination[n - 1][r - 1] + combination[n - 1][r];
+            let prev_rank = rank(&mut combination, n - 1);
+            rank(&mut combination, n)[r] = prev_rank[r - 1] + prev_rank[r];
         }
     }
 
@@ -32,7 +41,7 @@ fn main() {
     let mut avg_code_size = vec![0; PADDED_WIDTH];
 
     for n in 1..SBLOCK_WIDTH {
-        let size = log2(combination[SBLOCK_WIDTH][n] - 1) as usize + 1;
+        let size = log2(rank(&mut combination, SBLOCK_WIDTH)[n] - 1) as usize + 1;
         code_size[n] = if size <= MAX_CODE_SIZE {
             size
         } else {
@@ -55,13 +64,13 @@ fn main() {
         pub const SBLOCK_WIDTH: u64 = {:?};
         const SIZE: usize = SBLOCK_WIDTH as usize + 1;
         const PADDED_WIDTH: usize = {:?};
-        pub const COMBINATION: [[u64; SIZE]; SIZE] = {:?};
+        pub const COMBINATION: [u64; SIZE * SIZE] = {:?};
         pub const CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
         pub const AVG_CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
         ",
         SBLOCK_WIDTH,
         PADDED_WIDTH,
-        combination,
+        combination.as_slice(),
         code_size,
         avg_code_size
     )

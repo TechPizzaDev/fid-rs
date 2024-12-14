@@ -1,6 +1,9 @@
+use crate::coding::*;
 use crate::fid::FID;
-use crate::{bit_array::BitArray, tables::*};
+use crate::util::mask_u64;
+use crate::{bit_array::*, tables::*};
 use std::fmt;
+use std::num::NonZeroU8;
 
 use roxygen::*;
 
@@ -177,14 +180,12 @@ impl BitVector {
             self.last_sblock_bits |= 1 << (self.len % SBLOCK_WIDTH);
             self.ones += 1;
             if self.ones % SELECT_UNIT_NUM == 0 {
-                self.select1_unit_pointers
-                    .push((self.len >> LBLOCK_SIZE) as usize);
+                self.push_select_unit(true);
             }
         } else {
             let zeros = self.len - self.ones + 1;
             if zeros % SELECT_UNIT_NUM == 0 {
-                self.select0_unit_pointers
-                    .push((self.len >> LBLOCK_SIZE) as usize);
+                self.push_select_unit(false);
             }
         }
         self.len += 1;
@@ -192,6 +193,16 @@ impl BitVector {
         if self.len % SBLOCK_WIDTH == 0 {
             self.push_blocks();
         }
+    }
+
+    #[cold]
+    fn push_select_unit(&mut self, b: bool) {
+        let vec = if b {
+            &mut self.select1_unit_pointers
+        } else {
+            &mut self.select0_unit_pointers
+        };
+        vec.push((self.len >> LBLOCK_SIZE) as usize)
     }
 
     #[cold]
@@ -204,7 +215,6 @@ impl BitVector {
         let (index, index_size) = encode(self.last_sblock_bits, last_sblock as usize);
         self.indices.set_slice(self.pointer, index_size, index);
         self.pointer += index_size;
-
         self.last_sblock_bits = 0;
 
         if self.len % LBLOCK_WIDTH == 0 {
@@ -239,6 +249,59 @@ impl BitVector {
     fn get_pointer(&self, pos: usize) -> u64 {
         *self.pointers.get(pos.wrapping_sub(1)).unwrap_or(&0)
     }
+
+    fn get_pointer_and_rank(&self, i: u64) -> (u64, u64) {
+        let lblock_pos = i / LBLOCK_WIDTH;
+        let sblock_start_pos = lblock_pos * (LBLOCK_WIDTH / SBLOCK_WIDTH);
+        let sblock_end_pos = i / SBLOCK_WIDTH;
+        let mut pointer = self.get_pointer(lblock_pos as usize);
+        let mut rank = self.get_lblock(lblock_pos as usize);
+
+        for j in sblock_start_pos..sblock_end_pos {
+            let k = self.sblocks.get_word(j, SBLOCK_SIZE);
+            pointer += CODE_SIZE[k as usize] as u64;
+            rank += k;
+        }
+        (pointer, rank)
+    }
+
+    fn get_index(&self, i: u64) -> EncodedIndex {
+        let sblock_end_pos = i / SBLOCK_WIDTH;
+        let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE) as u8;
+
+        if let Some(sblock) = NonZeroU8::new(sblock) {
+            let pointer = self.get_pointer_and_rank(i).0;
+            let code_size = CODE_SIZE[sblock.get() as usize] as u64;
+            let index = self.indices.get_slice(pointer, code_size);
+
+            if code_size == SBLOCK_WIDTH {
+                EncodedIndex::Raw { index }
+            } else {
+                EncodedIndex::Packed { index, sblock }
+            }
+        } else {
+            EncodedIndex::Zero
+        }
+    }
+
+    /// Decode all bits up to end of slice (`sblock[0..(i % SBLOCK_WIDTH + size)]`).
+    fn decode_sblock(&self, i: u64, size: usize) -> u64 {
+        match self.get_index(i) {
+            EncodedIndex::Zero => 0,
+            EncodedIndex::Raw { index, .. } => index,
+            EncodedIndex::Packed { index, sblock } => {
+                let sblock = sblock.get().into();
+                let end = (i % SBLOCK_WIDTH) as usize + size;
+                decode_raw(index, sblock, end)
+            }
+        }
+    }
+}
+
+enum EncodedIndex {
+    Zero,
+    Raw { index: u64 },
+    Packed { index: u64, sblock: NonZeroU8 },
 }
 
 impl fmt::Debug for BitVector {
@@ -268,29 +331,51 @@ impl FID for BitVector {
 
         let excess = self.len - i;
         let last_sblock_width = self.len % SBLOCK_WIDTH;
-        if excess <= last_sblock_width {
-            return (self.last_sblock_bits >> (last_sblock_width - excess)) & 1 == 1;
-        }
+        let sblock = if excess <= last_sblock_width {
+            self.last_sblock_bits
+        } else {
+            match self.get_index(i) {
+                EncodedIndex::Zero => 0,
+                EncodedIndex::Raw { index, .. } => index,
+                EncodedIndex::Packed { index, sblock } => {
+                    let sblock = sblock.get().into();
+                    let end = (i % SBLOCK_WIDTH) as usize;
+                    return decode_bit(index, sblock, end);
+                }
+            }
+        };
+        sblock.wrapping_shr(i as u32) & 1 != 0
+    }
 
-        let lblock_pos = i / LBLOCK_WIDTH;
-        let sblock_start_pos = lblock_pos * (LBLOCK_WIDTH / SBLOCK_WIDTH);
+    fn get_slice(&self, i: u64, size: u64) -> u64 {
+        debug_assert!(size <= 64);
+
+        let slice_end = i + size;
+        assert!(slice_end <= self.len);
+
         let sblock_end_pos = i / SBLOCK_WIDTH;
-        let mut pointer = self.get_pointer(lblock_pos as usize);
+        let hi_start = (sblock_end_pos + 1) * SBLOCK_WIDTH;
+        let hi_size = slice_end.saturating_sub(hi_start);
+        let lo_size = size - hi_size;
 
-        for j in sblock_start_pos..sblock_end_pos {
-            let k = self.sblocks.get_word(j, SBLOCK_SIZE);
-            pointer += CODE_SIZE[k as usize] as u64;
-        }
+        let last_sblock_width = self.len % SBLOCK_WIDTH;
+        let packed_len = self.len - last_sblock_width;
 
-        let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE);
-        let code_size = CODE_SIZE[sblock as usize] as u64;
-        let index = self.indices.get_slice(pointer, code_size);
+        let lo_block = if (i < packed_len) && (lo_size != 0) {
+            self.decode_sblock(i, lo_size as usize)
+        } else {
+            self.last_sblock_bits
+        };
 
-        decode_bit(
-            index,
-            sblock as usize,
-            (i - sblock_end_pos * SBLOCK_WIDTH) as usize,
-        )
+        let hi_block = if (hi_start < packed_len) && (hi_size != 0) {
+            self.decode_sblock(hi_start, hi_size as usize)
+        } else {
+            self.last_sblock_bits
+        };
+
+        let lo_bits = lo_block.wrapping_shr(i as u32) & mask_u64(lo_size);
+        let hi_bits = (hi_block & mask_u64(hi_size)).wrapping_shl(lo_size as u32);
+        return hi_bits | lo_bits;
     }
 
     fn rank1(&self, i: u64) -> u64 {
@@ -304,17 +389,9 @@ impl FID for BitVector {
             return self.ones - last_ones as u64;
         }
 
-        let lblock_pos = i / LBLOCK_WIDTH;
-        let sblock_start_pos = lblock_pos * (LBLOCK_WIDTH / SBLOCK_WIDTH);
         let sblock_end_pos = i / SBLOCK_WIDTH;
-        let mut pointer = self.get_pointer(lblock_pos as usize);
-        let mut rank = self.get_lblock(lblock_pos as usize);
+        let (pointer, rank) = self.get_pointer_and_rank(i);
 
-        for j in sblock_start_pos..sblock_end_pos {
-            let k = self.sblocks.get_word(j, SBLOCK_SIZE);
-            rank += k;
-            pointer += CODE_SIZE[k as usize] as u64;
-        }
         let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE);
         let code_size = CODE_SIZE[sblock as usize] as u64;
         let index = self.indices.get_slice(pointer, code_size);
@@ -345,14 +422,17 @@ impl FID for BitVector {
         }
 
         let mut sblock_pos = lblock_pos as u64 * (LBLOCK_WIDTH / SBLOCK_WIDTH);
-        let mut sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
+        let mut sblock;
         let mut rank = self.get_lblock(lblock_pos);
         let mut pointer = self.get_pointer(lblock_pos);
-        while rank + sblock <= r {
+        loop {
+            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
+            if rank + sblock > r {
+                break;
+            }
             rank += sblock;
             pointer += CODE_SIZE[sblock as usize] as u64;
             sblock_pos += 1;
-            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
         }
 
         let code_size = CODE_SIZE[sblock as usize] as u64;
@@ -382,15 +462,16 @@ impl FID for BitVector {
         if zeros - r <= last_sblock {
             let rank = r - (zeros - last_sblock);
             let k = self.len - last_sblock_width;
-            let select = select0_raw(self.last_sblock_bits, rank as usize);
+            let select = select0_raw(self.last_sblock_bits, rank as u32);
             return k + select;
         }
 
         let mut sblock_pos = lblock_pos as u64 * (LBLOCK_WIDTH / SBLOCK_WIDTH);
-        let mut sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
+        let mut sblock;
         let mut rank = LBLOCK_WIDTH * (lblock_pos as u64) - self.get_lblock(lblock_pos);
         let mut pointer = self.get_pointer(lblock_pos);
         loop {
+            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
             let sblock_zero = SBLOCK_WIDTH - sblock;
             if rank + sblock_zero > r {
                 break;
@@ -398,7 +479,6 @@ impl FID for BitVector {
             rank += sblock_zero;
             pointer += CODE_SIZE[sblock as usize] as u64;
             sblock_pos += 1;
-            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
         }
 
         let code_size = CODE_SIZE[sblock as usize] as u64;
@@ -411,188 +491,11 @@ impl FID for BitVector {
 
 impl From<&[bool]> for BitVector {
     fn from(value: &[bool]) -> Self {
-        // `set_bit_slice` will reserve capacity
         let mut vec = Self::with_capacity(value.len() as u64);
         for b in value {
             vec.push(*b);
         }
         vec
-    }
-}
-
-fn select1_raw(mut bits: u64, mut r: usize) -> u64 {
-    let mut i = 0;
-    while bits > 0 {
-        if bits & 1 == 1 {
-            if r == 0 {
-                return i;
-            }
-            r -= 1;
-        }
-        i += 1;
-        bits >>= 1;
-    }
-    64
-}
-
-fn select0_raw(mut bits: u64, mut r: usize) -> u64 {
-    let mut i = 0;
-    while i < 64 {
-        if bits & 1 == 0 {
-            if r == 0 {
-                return i;
-            }
-            r -= 1;
-        }
-        i += 1;
-        bits >>= 1;
-    }
-    64
-}
-
-#[inline(always)]
-#[roxygen]
-/// Access [`COMBINATION`] without bounds checking.  
-/// Asserting conditions for skipping bound checks allows
-/// loops to be unrolled further and without a panic branch per iteration.
-unsafe fn get_combination_size_unchecked(
-    /// Combination index.
-    c: u64,
-    /// Size index.
-    s: usize,
-) -> u64 {
-    debug_assert!(c <= SBLOCK_WIDTH);
-    debug_assert!(s <= SBLOCK_WIDTH as usize);
-
-    let sizes = &COMBINATION[(SBLOCK_WIDTH - c - 1) as usize];
-    unsafe { *sizes.get_unchecked(s) }
-}
-
-#[roxygen]
-/// Encode an integer using a table of combinations.
-#[arguments_section]
-/// # Panics
-/// `k` exceeds the count of ones in `bits`.
-fn encode(
-    /// Value to encode.
-    bits: u64,
-    /// Count of ones in `bits`.
-    k: usize,
-) -> (u64, u64) {
-    debug_assert!(bits.count_ones() as usize == k);
-
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return (bits, code_size);
-    }
-
-    let mut l = 0;
-    let mut code = 0;
-    for i in 0..SBLOCK_WIDTH {
-        if (bits >> i) & 1 > 0 {
-            // SAFETY: `bits` assert ensures `l` will not exceed `k`
-            code += unsafe { get_combination_size_unchecked(i, k - l) };
-            l += 1;
-        }
-    }
-    (code, code_size)
-}
-
-fn decode_rank1(mut index: u64, k: usize, p: u64) -> u64 {
-    assert!(k <= SBLOCK_WIDTH as usize);
-    assert!(p <= SBLOCK_WIDTH);
-
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return (index & ((1 << p) - 1)).count_ones() as u64;
-    }
-
-    let mut l = 0;
-    for i in 0..p {
-        // SAFETY: `k` and `p` asserts
-        let base = unsafe { get_combination_size_unchecked(i, k - l) };
-
-        if index >= base {
-            index -= base;
-            l += 1;
-            if l == k {
-                break;
-            }
-        }
-    }
-    l as u64
-}
-
-fn decode_select1(mut index: u64, k: usize, r: usize) -> u64 {
-    assert!(k <= SBLOCK_WIDTH as usize);
-
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return select1_raw(index, r);
-    }
-
-    let mut l = 0;
-    for i in 0..SBLOCK_WIDTH {
-        // SAFETY: `k` assert
-        let base = unsafe { get_combination_size_unchecked(i, k - l) };
-
-        if index >= base {
-            if l == r {
-                return i;
-            }
-            index -= base;
-            l += 1;
-        }
-    }
-    64
-}
-
-fn decode_select0(mut index: u64, k: usize, r: usize) -> u64 {
-    assert!(k <= SBLOCK_WIDTH as usize);
-
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return select0_raw(index, r);
-    }
-
-    let mut l = 0;
-    for i in 0..SBLOCK_WIDTH {
-        // SAFETY: `k` assert
-        let base = unsafe { get_combination_size_unchecked(i, k - l) };
-
-        if index >= base {
-            index -= base;
-            l += 1;
-        } else if i as usize - l == r {
-            return i;
-        }
-    }
-    64
-}
-
-fn decode_bit(mut index: u64, k: usize, p: usize) -> bool {
-    assert!(k <= SBLOCK_WIDTH as usize);
-    assert!(p <= SBLOCK_WIDTH as usize);
-
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return (index >> p) & 1 == 1;
-    }
-
-    // SAFETY: `k` and `p` asserts
-    unsafe {
-        let mut l = 0;
-        for i in 0..p {
-            let base = get_combination_size_unchecked(i as u64, k - l);
-            if index >= base {
-                index -= base;
-                l += 1;
-                if l == k {
-                    break;
-                }
-            }
-        }
-        index >= get_combination_size_unchecked(p as u64, k - l)
     }
 }
 
@@ -602,129 +505,6 @@ mod tests {
     use self::rand::{Rng, SeedableRng, StdRng};
     use super::*;
     use crate::bit_arr;
-
-    fn decode(mut index: u64, k: usize) -> u64 {
-        let code_size = CODE_SIZE[k] as u64;
-        if code_size == SBLOCK_WIDTH {
-            return index;
-        }
-
-        let mut l = 0;
-        let mut bits = 0;
-        for i in 0..SBLOCK_WIDTH {
-            let base = COMBINATION[(SBLOCK_WIDTH - i - 1) as usize][k - l];
-            if index >= base {
-                bits |= 1 << i;
-                index -= base;
-                l += 1;
-                if l == k {
-                    break;
-                }
-            }
-        }
-        bits
-    }
-
-    #[test]
-    fn test_encode_decode_rng() {
-        let n = 1000;
-        let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-        for _ in 0..n {
-            let bits: u64 = rng.gen();
-            let k = bits.count_ones() as usize;
-            assert_eq!(decode(encode(bits, k).0, k), bits);
-        }
-    }
-
-    #[test]
-    fn test_encode_decode_log() {
-        for i in 0..u64::BITS {
-            let bits: u64 = !0 >> i;
-            let k = bits.count_ones() as usize;
-            assert_eq!(decode(encode(bits, k).0, k), bits);
-        }
-    }
-
-    #[test]
-    fn test_decode_rank1() {
-        let n = 100;
-        let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-        for _ in 0..n {
-            let bits: u64 = rng.gen();
-            let k = bits.count_ones() as usize;
-            for p in 0..64 {
-                let ans = u64::from((bits & ((1 << p) - 1)).count_ones());
-                assert_eq!(decode_rank1(encode(bits, k).0, k, p), ans);
-            }
-        }
-    }
-
-    #[test]
-    fn test_decode_select1() {
-        assert_eq!(decode_select1(encode(u64::MAX, 64).0, 64, 64), 64);
-
-        let n = 100;
-        let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-        for _ in 0..n {
-            let bits: u64 = rng.gen();
-            let k = bits.count_ones() as usize;
-            let mut ans = 0;
-            for r in 0..k {
-                while ans < 64 {
-                    if bits & (1 << ans) > 0 {
-                        break;
-                    }
-                    ans += 1;
-                }
-                assert_eq!(decode_select1(encode(bits, k).0, k, r), ans);
-                ans += 1;
-            }
-        }
-    }
-
-    #[test]
-    fn test_decode_select0() {
-        assert_eq!(decode_select0(encode(!0u64 >> 32, 32).0, 32, 64), 64);
-
-        let n = 100;
-        let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-        for _ in 0..n {
-            let bits: u64 = rng.gen();
-            let k = bits.count_ones() as usize;
-            let mut ans = 0;
-            for r in 0..(64 - k) {
-                while ans < 64 {
-                    if bits & (1 << ans) == 0 {
-                        break;
-                    }
-                    ans += 1;
-                }
-                assert_eq!(decode_select0(encode(bits, k).0, k, r), ans);
-                ans += 1;
-            }
-        }
-    }
-
-    #[test]
-    fn test_decode_bit() {
-        let n = 100;
-        let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-        for _ in 0..n {
-            let bits: u64 = rng.gen();
-            let k = bits.count_ones() as usize;
-            for p in 0..64 {
-                let ans = (bits >> p) & 1 == 1;
-                assert_eq!(
-                    decode_bit(encode(bits, k).0, k, p),
-                    ans,
-                    "the {}-th bit of {:064b} is {}",
-                    p,
-                    bits,
-                    ans as u8,
-                );
-            }
-        }
-    }
 
     const TEST_PROB: &[f64] = &[0.01, 0.5, 0.99];
     const TEST_SIZE: &[u64] = &[
@@ -823,8 +603,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get() {
+    fn gen_rng<F>(f: F)
+    where
+        F: Fn(u64, BitVector, BitArray),
+    {
         for &p in TEST_PROB {
             for &n in TEST_SIZE {
                 let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
@@ -836,11 +618,53 @@ mod tests {
                     bv.push(b);
                 }
 
-                for i in 0..n {
-                    assert_eq!(bv.get(i), ba.get_bit(i));
-                }
+                f(n, bv, ba);
             }
         }
+    }
+
+    #[test]
+    fn get() {
+        gen_rng(|n, bv, ba| {
+            for i in 0..n {
+                assert_eq!(bv.get(i), ba.get_bit(i));
+            }
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_empty_slice_out_of_bounds() {
+        let bv = BitVector::new();
+        bv.get_slice(129, 0);
+    }
+
+    #[test]
+    fn get_empty_slice() {
+        gen_rng(|n, bv, _| {
+            for i in 0..n {
+                assert_eq!(bv.get_slice(i, 0), 0);
+            }
+        });
+    }
+
+    #[test]
+    fn get_word() {
+        gen_rng(|n, bv, ba| {
+            let word_size = 7;
+            for i in 0..(n / word_size) {
+                assert_eq!(bv.get_word(i, word_size), ba.get_word(i, word_size));
+            }
+        });
+    }
+
+    #[test]
+    fn get_block() {
+        gen_rng(|n, bv, ba| {
+            for i in 0..(n / SBLOCK_WIDTH) {
+                assert_eq!(bv.get_word(i, SBLOCK_WIDTH), ba.get_word(i, SBLOCK_WIDTH));
+            }
+        });
     }
 
     #[cfg(feature = "serde")]
