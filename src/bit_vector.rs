@@ -1,9 +1,9 @@
 use crate::coding::*;
 use crate::fid::FID;
-use crate::util::mask_u64;
+use crate::util::{mask_u64, phi_sub};
 use crate::{bit_array::*, tables::*};
 use std::fmt;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU32, NonZeroU8};
 
 use roxygen::*;
 
@@ -250,6 +250,7 @@ impl BitVector {
         *self.pointers.get(pos.wrapping_sub(1)).unwrap_or(&0)
     }
 
+    #[inline(never)]
     fn get_pointer_and_rank(&self, i: u64) -> (u64, u64) {
         let lblock_pos = i / LBLOCK_WIDTH;
         let sblock_start_pos = lblock_pos * (LBLOCK_WIDTH / SBLOCK_WIDTH);
@@ -275,7 +276,7 @@ impl BitVector {
             let index = self.indices.get_slice(pointer, code_size);
 
             if code_size == SBLOCK_WIDTH {
-                EncodedIndex::Raw { index }
+                EncodedIndex::Raw { bits: index }
             } else {
                 EncodedIndex::Packed { index, sblock }
             }
@@ -284,23 +285,37 @@ impl BitVector {
         }
     }
 
-    /// Decode all bits up to end of slice (`sblock[0..(i % SBLOCK_WIDTH + size)]`).
-    fn decode_sblock(&self, i: u64, size: usize) -> u64 {
+    /// Decode bits up to end of slice (`sblock[0..(i % SBLOCK_WIDTH + size)]`).
+    /// Returns whole block when not packed.
+    fn decode_sblock(&self, i: u64, size: NonZeroU32) -> u64 {
         match self.get_index(i) {
             EncodedIndex::Zero => 0,
-            EncodedIndex::Raw { index, .. } => index,
+            EncodedIndex::Raw { bits } => bits,
             EncodedIndex::Packed { index, sblock } => {
-                let sblock = sblock.get().into();
-                let end = (i % SBLOCK_WIDTH) as usize + size;
-                decode_raw(index, sblock, end)
+                let sblock = sblock.into();
+                let end = size.saturating_add((i % SBLOCK_WIDTH) as u32);
+                decode_index(index, sblock, end)
             }
         }
+    }
+
+    fn find_lblock_pos(&self, b: bool, r: u64) -> usize {
+        let mut lblock_pos = self.get_unit(b, r);
+        while lblock_pos < self.lblocks.len() {
+            let lblock = self.lblocks[lblock_pos];
+            let rank = phi_sub(b, LBLOCK_WIDTH * (lblock_pos as u64 + 1), lblock);
+            if rank >= r {
+                break;
+            }
+            lblock_pos += 1;
+        }
+        lblock_pos
     }
 }
 
 enum EncodedIndex {
     Zero,
-    Raw { index: u64 },
+    Raw { bits: u64 },
     Packed { index: u64, sblock: NonZeroU8 },
 }
 
@@ -334,15 +349,7 @@ impl FID for BitVector {
         let sblock = if excess <= last_sblock_width {
             self.last_sblock_bits
         } else {
-            match self.get_index(i) {
-                EncodedIndex::Zero => 0,
-                EncodedIndex::Raw { index, .. } => index,
-                EncodedIndex::Packed { index, sblock } => {
-                    let sblock = sblock.get().into();
-                    let end = (i % SBLOCK_WIDTH) as usize;
-                    return decode_bit(index, sblock, end);
-                }
-            }
+            self.decode_sblock(i, NonZeroU32::new(1).unwrap())
         };
         sblock.wrapping_shr(i as u32) & 1 != 0
     }
@@ -362,13 +369,13 @@ impl FID for BitVector {
         let packed_len = self.len - last_sblock_width;
 
         let lo_block = if (i < packed_len) && (lo_size != 0) {
-            self.decode_sblock(i, lo_size as usize)
+            self.decode_sblock(i, NonZeroU32::new(lo_size as u32).unwrap())
         } else {
             self.last_sblock_bits
         };
 
         let hi_block = if (hi_start < packed_len) && (hi_size != 0) {
-            self.decode_sblock(hi_start, hi_size as usize)
+            self.decode_sblock(hi_start, NonZeroU32::new(hi_size as u32).unwrap())
         } else {
             self.last_sblock_bits
         };
@@ -376,6 +383,17 @@ impl FID for BitVector {
         let lo_bits = lo_block.wrapping_shr(i as u32) & mask_u64(lo_size);
         let hi_bits = (hi_block & mask_u64(hi_size)).wrapping_shl(lo_size as u32);
         return hi_bits | lo_bits;
+    }
+
+    fn get_word(&self, i: u64, size: u64) -> u64 {
+        let i = i * size;
+        if size == SBLOCK_WIDTH {
+            let slice_end = i + size;
+            assert!(slice_end <= self.len);
+
+            return self.decode_sblock(i, NonZeroU32::new(size as u32).unwrap());
+        }
+        self.get_slice(i, size)
     }
 
     fn rank1(&self, i: u64) -> u64 {
@@ -399,93 +417,46 @@ impl FID for BitVector {
         rank + decode_rank1(index, sblock as usize, i - sblock_end_pos * SBLOCK_WIDTH)
     }
 
-    fn select1(&self, r: u64) -> u64 {
-        if self.ones <= r {
+    fn select(&self, b: bool, r: u64) -> u64 {
+        let phi_len = phi_sub(b, self.len, self.ones);
+        if phi_len <= r {
             return self.len;
         }
 
-        let mut lblock_pos = self.get_unit(true, r);
-        while lblock_pos < self.lblocks.len() {
-            let lblock = self.lblocks[lblock_pos];
-            if lblock >= r {
-                break;
-            }
-            lblock_pos += 1;
-        }
-
-        let last_sblock = self.last_sblock_bits.count_ones() as u64;
-        if self.ones - r <= last_sblock {
-            let k = self.len - self.len % SBLOCK_WIDTH;
-            let rank = r - (self.ones - last_sblock);
-            let select = select1_raw(self.last_sblock_bits, rank as usize);
+        let last_sblk_bits = self.last_sblock_bits;
+        let last_sblk_width = self.len % SBLOCK_WIDTH;
+        let last_sblk = phi_sub(b, last_sblk_width, last_sblk_bits.count_ones() as u64);
+        if phi_len - r <= last_sblk {
+            let k = self.len - last_sblk_width;
+            let rank = r - (phi_len - last_sblk);
+            let bits = if b { !last_sblk_bits } else { last_sblk_bits };
+            let select = select0_raw(bits, rank);
             return k + select;
         }
 
-        let mut sblock_pos = lblock_pos as u64 * (LBLOCK_WIDTH / SBLOCK_WIDTH);
-        let mut sblock;
-        let mut rank = self.get_lblock(lblock_pos);
-        let mut pointer = self.get_pointer(lblock_pos);
-        loop {
-            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
-            if rank + sblock > r {
-                break;
-            }
-            rank += sblock;
-            pointer += CODE_SIZE[sblock as usize] as u64;
-            sblock_pos += 1;
-        }
-
-        let code_size = CODE_SIZE[sblock as usize] as u64;
-        let index = self.indices.get_slice(pointer, code_size);
-        let select_sblock = decode_select1(index, sblock as usize, (r - rank) as usize);
-
-        sblock_pos as u64 * SBLOCK_WIDTH + select_sblock
-    }
-
-    fn select0(&self, r: u64) -> u64 {
-        let zeros = self.len - self.ones;
-        if zeros <= r {
-            return self.len;
-        }
-
-        let mut lblock_pos = self.get_unit(false, r);
-        while lblock_pos < self.lblocks.len() {
-            let lblock = LBLOCK_WIDTH * (lblock_pos as u64 + 1) - self.lblocks[lblock_pos];
-            if lblock >= r {
-                break;
-            }
-            lblock_pos += 1;
-        }
-
-        let last_sblock_width = self.len % SBLOCK_WIDTH;
-        let last_sblock = last_sblock_width - u64::from(self.last_sblock_bits.count_ones());
-        if zeros - r <= last_sblock {
-            let rank = r - (zeros - last_sblock);
-            let k = self.len - last_sblock_width;
-            let select = select0_raw(self.last_sblock_bits, rank as u32);
-            return k + select;
-        }
+        let lblock_pos = self.find_lblock_pos(b, r);
+        let lblock = self.get_lblock(lblock_pos);
 
         let mut sblock_pos = lblock_pos as u64 * (LBLOCK_WIDTH / SBLOCK_WIDTH);
         let mut sblock;
-        let mut rank = LBLOCK_WIDTH * (lblock_pos as u64) - self.get_lblock(lblock_pos);
+        let mut rank = phi_sub(b, LBLOCK_WIDTH * (lblock_pos as u64), lblock);
         let mut pointer = self.get_pointer(lblock_pos);
         loop {
-            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE);
-            let sblock_zero = SBLOCK_WIDTH - sblock;
-            if rank + sblock_zero > r {
+            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE) as usize;
+            let next_rank = rank + phi_sub(b, SBLOCK_WIDTH, sblock as u64);
+            if next_rank > r {
                 break;
             }
-            rank += sblock_zero;
-            pointer += CODE_SIZE[sblock as usize] as u64;
+            rank = next_rank;
+            pointer += CODE_SIZE[sblock] as u64;
             sblock_pos += 1;
         }
 
-        let code_size = CODE_SIZE[sblock as usize] as u64;
+        let code_size = CODE_SIZE[sblock] as u64;
         let index = self.indices.get_slice(pointer, code_size);
-        let select_sblock = decode_select0(index, sblock as usize, (r - rank) as usize);
+        let select_sblock = decode_select(b, index, sblock, r - rank);
 
-        sblock_pos as u64 * SBLOCK_WIDTH + select_sblock
+        sblock_pos * SBLOCK_WIDTH + select_sblock
     }
 }
 
@@ -651,18 +622,10 @@ mod tests {
     #[test]
     fn get_word() {
         gen_rng(|n, bv, ba| {
-            let word_size = 7;
-            for i in 0..(n / word_size) {
-                assert_eq!(bv.get_word(i, word_size), ba.get_word(i, word_size));
-            }
-        });
-    }
-
-    #[test]
-    fn get_block() {
-        gen_rng(|n, bv, ba| {
-            for i in 0..(n / SBLOCK_WIDTH) {
-                assert_eq!(bv.get_word(i, SBLOCK_WIDTH), ba.get_word(i, SBLOCK_WIDTH));
+            for word_size in &[7, SBLOCK_WIDTH] {
+                for i in 0..(n / word_size) {
+                    assert_eq!(bv.get_word(i, *word_size), ba.get_word(i, *word_size));
+                }
             }
         });
     }

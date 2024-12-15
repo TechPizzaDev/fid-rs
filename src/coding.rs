@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use roxygen::{arguments_section, roxygen};
 
 use crate::tables::*;
@@ -50,15 +52,18 @@ pub fn encode(
     (code, code_size)
 }
 
-pub fn decode_raw(mut index: u64, mut sblock: usize, end: usize) -> u64 {
-    debug_assert!(sblock <= SBLOCK_WIDTH as usize);
-    debug_assert!(end <= SBLOCK_WIDTH as usize);
+pub fn decode_index(mut index: u64, sblock: NonZeroU32, end: NonZeroU32) -> u64 {
+    let mut sblock = sblock.get();
+    let end = end.get();
+
+    debug_assert!(sblock <= SBLOCK_WIDTH as u32);
+    debug_assert!(end <= SBLOCK_WIDTH as u32);
 
     let mut bits = 0;
     let mut i = 0;
     while (i < end) && (sblock > 0) {
         // SAFETY: `sblock` and `end` asserts
-        let base = unsafe { get_combination_size_unchecked(i as u64, sblock) };
+        let base = unsafe { get_combination_size_unchecked(i as u64, sblock as usize) };
         if index >= base {
             index -= base;
             bits |= 1 << i;
@@ -69,55 +74,20 @@ pub fn decode_raw(mut index: u64, mut sblock: usize, end: usize) -> u64 {
     bits
 }
 
-pub fn decode_bit(mut index: u64, k: usize, p: usize) -> bool {
-    debug_assert!(k <= SBLOCK_WIDTH as usize);
-    debug_assert!(p <= SBLOCK_WIDTH as usize);
-
-    // SAFETY: `k` and `p` asserts
-    unsafe {
-        let mut l = 0;
-        for i in 0..p {
-            let base = get_combination_size_unchecked(i as u64, k - l);
-            if index >= base {
-                index -= base;
-                l += 1;
-                if l == k {
-                    break;
-                }
-            }
-        }
-        index >= get_combination_size_unchecked(p as u64, k - l)
-    }
-}
-
-pub fn select1_raw(mut bits: u64, mut r: usize) -> u64 {
-    let mut i = 0;
-    while bits > 0 {
-        if bits & 1 == 1 {
-            if r == 0 {
-                return i;
-            }
-            r -= 1;
-        }
-        i += 1;
-        bits >>= 1;
-    }
-    64
-}
-
-pub fn select0_raw(bits: u64, mut r: u32) -> u64 {
+#[inline(never)]
+pub fn select0_raw(bits: u64, mut r: u64) -> u64 {
     let mut i = 0;
     while i < 64 {
-        let bits = bits >> i;
-        let zeros = bits.trailing_zeros();
+        let slice = bits >> i;
+        let zeros = slice.trailing_zeros() as u64;
         let count = if zeros != 0 {
             if zeros > r {
-                return (i + r) as u64;
+                return i + r;
             }
             r -= zeros;
             zeros
         } else {
-            bits.trailing_ones()
+            slice.trailing_ones() as u64
         };
         i += count;
     }
@@ -149,48 +119,34 @@ pub fn decode_rank1(mut index: u64, k: usize, p: u64) -> u64 {
     l as u64
 }
 
-pub fn decode_select1(mut index: u64, k: usize, r: usize) -> u64 {
+pub fn decode_select(b: bool, mut index: u64, k: usize, r: u64) -> u64 {
     assert!(k <= SBLOCK_WIDTH as usize);
 
     let code_size = CODE_SIZE[k] as u64;
     if code_size == SBLOCK_WIDTH {
-        return select1_raw(index, r);
+        let bits = if b { !index } else { index };
+        return select0_raw(bits, r);
     }
 
     let mut l = 0;
     for i in 0..SBLOCK_WIDTH {
         // SAFETY: `k` assert
-        let base = unsafe { get_combination_size_unchecked(i, k - l) };
-
-        if index >= base {
-            if l == r {
+        let base = unsafe { get_combination_size_unchecked(i, k - l as usize) };
+        if b {
+            if index >= base {
+                if l == r {
+                    return i;
+                }
+                index -= base;
+                l += 1;
+            }
+        } else {
+            if index >= base {
+                index -= base;
+                l += 1;
+            } else if i - l == r {
                 return i;
             }
-            index -= base;
-            l += 1;
-        }
-    }
-    64
-}
-
-pub fn decode_select0(mut index: u64, k: usize, r: usize) -> u64 {
-    assert!(k <= SBLOCK_WIDTH as usize);
-
-    let code_size = CODE_SIZE[k] as u64;
-    if code_size == SBLOCK_WIDTH {
-        return select0_raw(index, r as u32);
-    }
-
-    let mut l = 0;
-    for i in 0..SBLOCK_WIDTH {
-        // SAFETY: `k` assert
-        let base = unsafe { get_combination_size_unchecked(i, k - l) };
-
-        if index >= base {
-            index -= base;
-            l += 1;
-        } else if i as usize - l == r {
-            return i;
         }
     }
     64
@@ -205,11 +161,20 @@ mod tests {
     use super::*;
 
     fn decode(index: u64, sblock: usize) -> u64 {
+        if sblock == 0 {
+            return 0;
+        }
+
         let code_size = CODE_SIZE[sblock] as u64;
         if code_size == SBLOCK_WIDTH {
             return index;
         }
-        decode_raw(index, sblock, SBLOCK_WIDTH as usize)
+
+        decode_index(
+            index,
+            NonZeroU32::new(sblock as u32).unwrap(),
+            NonZeroU32::new(SBLOCK_WIDTH as u32).unwrap(),
+        )
     }
 
     #[test]
@@ -249,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_decode_select1() {
-        assert_eq!(decode_select1(encode(u64::MAX, 64).0, 64, 64), 64);
+        assert_eq!(decode_select(true, encode(u64::MAX, 64).0, 64, 64), 64);
 
         let n = 100;
         let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
@@ -259,7 +224,10 @@ mod tests {
             let mut ans = 0;
             for r in 0..k {
                 ans += (bits >> ans).trailing_zeros();
-                assert_eq!(decode_select1(encode(bits, k).0, k, r), ans as u64);
+                assert_eq!(
+                    decode_select(true, encode(bits, k).0, k, r as u64),
+                    ans as u64
+                );
                 ans += 1;
             }
         }
@@ -267,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_decode_select0() {
-        assert_eq!(decode_select0(encode(!0u64 >> 32, 32).0, 32, 64), 64);
+        assert_eq!(decode_select(false, encode(!0u64 >> 32, 32).0, 32, 64), 64);
 
         let n = 100;
         let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
@@ -277,32 +245,11 @@ mod tests {
             let mut ans = 0;
             for r in 0..(64 - k) {
                 ans += (bits >> ans).trailing_ones();
-                assert_eq!(decode_select0(encode(bits, k).0, k, r), ans as u64);
-                ans += 1;
-            }
-        }
-    }
-
-    #[test]
-    fn test_decode_bit() {
-        let n = 100;
-        let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
-        for _ in 0..n {
-            let bits: u64 = rng.gen();
-            let k = bits.count_ones() as usize;
-            for p in 0..64 {
-                let ans = (bits >> p) & 1 == 1;
-                let (encoded, code_size) = encode(bits, k);
-                let decoded = if code_size == SBLOCK_WIDTH {
-                    (encoded >> p) & 1 == 1
-                } else {
-                    decode_bit(encoded, k, p)
-                };
                 assert_eq!(
-                    decoded, ans,
-                    "the {}-th bit of {:064b} is {}",
-                    p, bits, ans as u8,
+                    decode_select(false, encode(bits, k).0, k, r as u64),
+                    ans as u64
                 );
+                ans += 1;
             }
         }
     }
