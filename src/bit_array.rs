@@ -136,14 +136,14 @@ impl BitArray {
     /// assert_eq!(ba.get_bit(256), true);
     /// ```
     pub fn set_bit(&mut self, i: u64, b: bool) {
-        self.ensure_bit_len(i + 1);
+        self.ensure_len(i + 1);
 
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
         let mask = 1 << p;
         let value = (b as Block) << p;
 
-        // SAFETY: `ensure_bit_len()` ensures valid len
+        // SAFETY: `ensure_len()` ensures valid len
         unsafe { self.set_block_unchecked(k as usize, value, mask) }
     }
 
@@ -167,15 +167,16 @@ impl BitArray {
         if size == 0 {
             return;
         }
-        self.ensure_bit_len(i + size);
+        self.ensure_len(i + size);
 
-        // SAFETY: `ensure_bit_len()` ensures valid len
+        // SAFETY: `ensure_len()` ensures valid len
         unsafe { self.set_slice_unchecked(i, size, slice) }
     }
 
     /// Mutate [`blocks`] without bound checks.
     #[inline]
     unsafe fn set_slice_unchecked(&mut self, i: u64, size: u64, slice: u64) {
+        debug_assert!(size > 0);
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
 
@@ -195,7 +196,7 @@ impl BitArray {
         debug_assert!(k < self.blocks.len());
 
         let slot = self.blocks.get_unchecked_mut(k);
-        *slot = (*slot & !mask) | bits;
+        *slot = (*slot & !mask) | (bits & mask);
     }
 
     /// Sets the `i`-th word of size `word_size` to `word`.
@@ -217,13 +218,13 @@ impl BitArray {
     /// Sets the `slice` at position `i`.
     pub fn set_bit_slice(&mut self, i: u64, slice: &[bool]) {
         let new_len = i + slice.len() as u64;
-        self.ensure_bit_len(new_len);
+        self.ensure_len(new_len);
 
         let k = i / BLOCK_SIZE;
         let p = i % BLOCK_SIZE;
         let mid = BLOCK_SIZE - p;
 
-        // SAFETY: `ensure_bit_len()` ensures valid len
+        // SAFETY: `ensure_len()` ensures valid len
         unsafe {
             let tail = if let Some((head, slice)) = slice.split_at_checked(mid as usize) {
                 let chunks = slice.chunks_exact(BLOCK_SIZE as usize);
@@ -288,6 +289,9 @@ impl BitArray {
     /// * End position of the word exceeds the capacity.
     /// * `size` is greater than 64.
     pub fn get_word(&self, i: u64, size: u64) -> u64 {
+        if size == BLOCK_SIZE {
+            return self.blocks[i as usize];
+        }
         self.get_slice(i * size, size)
     }
 
@@ -365,14 +369,15 @@ impl BitArray {
         self.blocks.truncate(new_len);
     }
 
-    fn ensure_bit_len(&mut self, len: u64) {
-        if len > self.len() {
-            resize_cold(self, len);
+    fn ensure_len(&mut self, len: u64) {
+        let new_len = blocks_for_bits(len);
+        if new_len > self.block_len() {
+            resize_cold(self, new_len);
         }
 
-        #[cold]
-        fn resize_cold(_self: &mut BitArray, new_len: u64) {
-            _self.resize(new_len, false);
+        #[inline(never)]
+        fn resize_cold(_self: &mut BitArray, new_len: usize) {
+            _self.resize_blocks(new_len, 0);
         }
     }
 }
@@ -393,6 +398,9 @@ impl From<&[bool]> for BitArray {
         arr
     }
 }
+
+// TODO: 
+// impl FID for BitArray
 
 #[cfg(test)]
 mod tests {
