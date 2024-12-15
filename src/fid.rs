@@ -59,7 +59,11 @@ pub trait FID {
         self.rank1(i + 1) - self.rank1(i) > 0
     }
 
-    /// Returns `size` bits starting at `i`.
+    /// Gets a slice with `size` bits at position `i`.
+    ///
+    /// # Panics
+    /// * End position of the slice exceeds the capacity.
+    /// * `size` is greater than 64.
     fn get_slice(&self, i: u64, size: u64) -> u64 {
         let mut bits = 0;
         for j in 0..size {
@@ -69,13 +73,12 @@ pub trait FID {
         bits
     }
 
-    /// Returns `size` bits starting at `i * size`.
+    /// Gets the `i`-th word with `size` bits.
+    ///
+    /// # Panics
+    /// * End position of the word exceeds the capacity.
+    /// * `size` is greater than 64.
     fn get_word(&self, i: u64, size: u64) -> u64 {
         self.get_slice(i * size, size)
-    }
-
-    /// Returns 64 bits starting at `i * 64`.
-    fn get_block(&self, i: u64) -> u64 {
-        self.get_slice(i * 64, 64)
     }
 }
