@@ -15,8 +15,8 @@ pub unsafe fn get_combination_size_unchecked(
     /// Size index.
     s: usize,
 ) -> u64 {
-    debug_assert!(i <= SBLOCK_WIDTH);
-    debug_assert!(s <= SBLOCK_WIDTH as usize);
+    debug_assert!(i < SBLOCK_WIDTH);
+    debug_assert!(s < (SBLOCK_WIDTH + 1) as usize);
 
     let offset = (SBLOCK_WIDTH - i - 1) * (SBLOCK_WIDTH + 1);
     *COMBINATION.get_unchecked(offset as usize + s)
