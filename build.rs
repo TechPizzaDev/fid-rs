@@ -38,7 +38,7 @@ fn main() {
     }
 
     let mut code_size = vec![0; PADDED_WIDTH];
-    let mut avg_code_size = vec![0; PADDED_WIDTH];
+    let mut avg_code_size = vec![0; SBLOCK_WIDTH];
 
     for n in 1..SBLOCK_WIDTH {
         let size = log2(row(&mut comb, SBLOCK_WIDTH)[n] - 1) as usize + 1;
@@ -65,7 +65,7 @@ fn main() {
         const PADDED_WIDTH: usize = {:?};
         pub const COMBINATION: [u64; SBLOCK_WIDTH as usize * SIZE] = {:?};
         pub const CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
-        pub const AVG_CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
+        pub const AVG_CODE_SIZE: [u8; SBLOCK_WIDTH as usize] = {:?};
         ",
         SBLOCK_WIDTH,
         PADDED_WIDTH,
