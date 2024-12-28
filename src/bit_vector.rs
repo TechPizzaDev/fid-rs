@@ -1,9 +1,10 @@
 use crate::coding::*;
 use crate::fid::FID;
+use crate::fid_iter::FidBitIter;
 use crate::util::{mask_u64, phi_sub};
 use crate::{bit_array::*, tables::*};
-use std::fmt;
 use std::num::{NonZeroU32, NonZeroU8};
+use std::{fmt, usize};
 
 use roxygen::*;
 
@@ -93,6 +94,14 @@ impl BitVector {
     /// The vector will not allocate until elements are pushed onto it.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn iter(&self) -> FidBitIter<'_, Self> {
+        FidBitIter::new(&self)
+    }
+
+    pub fn to_vec(&self) -> Vec<bool> {
+        self.iter().collect()
     }
 
     pub fn from_bit(b: bool, len: u64) -> Self {
@@ -460,11 +469,32 @@ impl FID for BitVector {
     }
 }
 
+impl<'i> IntoIterator for &'i BitVector {
+    type Item = bool;
+
+    type IntoIter = FidBitIter<'i, BitVector>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FidBitIter::new(self)
+    }
+}
+
 impl From<&[bool]> for BitVector {
     fn from(value: &[bool]) -> Self {
         let mut vec = Self::with_capacity(value.len() as u64);
         for b in value {
             vec.push(*b);
+        }
+        vec
+    }
+}
+
+impl FromIterator<bool> for BitVector {
+    fn from_iter<T: IntoIterator<Item = bool>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let mut vec = Self::with_capacity(iter.size_hint().0 as u64);
+        for b in iter {
+            vec.push(b);
         }
         vec
     }
