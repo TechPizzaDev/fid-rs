@@ -21,19 +21,13 @@ const PADDED_WIDTH: usize = 1 << 7;
 fn main() {
     assert!(PADDED_WIDTH >= SIZE);
 
-    let mut comb = Box::new([0u64; SIZE * SIZE]);
-
-    fn row(comb: &mut [u64; SIZE * SIZE], n: usize) -> &mut [u64; SIZE] {
-        let start = n * SIZE;
-        let end = start + SIZE;
-        (&mut comb[start..end]).try_into().unwrap()
-    }
+    let mut comb = Box::new([[0; SIZE]; SIZE]);
 
     for n in 0..SIZE {
-        row(&mut comb, n)[0] = 1;
+        comb[n][0] = 1;
         for r in 1..=n {
-            let prev_rank = row(&mut comb, n - 1);
-            row(&mut comb, n)[r] = prev_rank[r - 1] + prev_rank[r];
+            let prev_row = &mut comb[n - 1];
+            comb[n][r] = prev_row[r - 1] + prev_row[r];
         }
     }
 
@@ -41,7 +35,7 @@ fn main() {
     let mut avg_code_size = vec![0; SBLOCK_WIDTH];
 
     for n in 1..SBLOCK_WIDTH {
-        let size = log2(row(&mut comb, SBLOCK_WIDTH)[n] - 1) as usize + 1;
+        let size = log2(comb[SBLOCK_WIDTH][n] - 1) as usize + 1;
         code_size[n] = if size <= MAX_CODE_SIZE {
             size
         } else {
@@ -69,7 +63,7 @@ fn main() {
         ",
         SBLOCK_WIDTH,
         PADDED_WIDTH,
-        &comb[..(SBLOCK_WIDTH as usize * SIZE)],
+        &comb.as_flattened()[..(SBLOCK_WIDTH as usize * SIZE)],
         code_size,
         avg_code_size
     )
