@@ -45,7 +45,7 @@ macro_rules! bit_arr {
     );
 }
 
-#[derive(Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "mem_dbg", derive(MemDbg, MemSize))]
 pub struct BitArray {
@@ -379,15 +379,6 @@ impl BitArray {
         fn resize_cold(_self: &mut BitArray, new_len: usize) {
             _self.resize_blocks(new_len, 0);
         }
-    }
-}
-
-impl fmt::Debug for BitArray {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.blocks
-            .iter()
-            .map(|b| writeln!(f, "{:0w$b}", b, w = BLOCK_SIZE as usize))
-            .collect()
     }
 }
 

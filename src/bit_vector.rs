@@ -64,7 +64,7 @@ macro_rules! bit_vec {
 ///
 /// [2] rsdic by Daisuke Okanohara.
 /// [https://github.com/hillbig/rsdic](https://github.com/hillbig/rsdic)
-#[derive(Clone, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "mem_dbg", derive(MemDbg, MemSize))]
 pub struct BitVector {
@@ -327,23 +327,6 @@ enum EncodedIndex {
     Zero,
     Raw { bits: u64 },
     Packed { index: u64, sblock: NonZeroU8 },
-}
-
-impl fmt::Debug for BitVector {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "len:    {}", self.len)?;
-        writeln!(f, "ones:   {}", self.ones)?;
-        write!(f, "sblock: ")?;
-        for i in 0..(self.len / SBLOCK_WIDTH) {
-            write!(f, "{} ", self.sblocks.get_word(i, SBLOCK_SIZE))?;
-        }
-        writeln!(f, "{}", self.last_sblock_bits.count_ones())?;
-        write!(f, "lblock: ")?;
-        for lb in &self.lblocks {
-            write!(f, "{} ", lb)?;
-        }
-        Ok(())
-    }
 }
 
 static TRUE: bool = true;
