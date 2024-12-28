@@ -12,6 +12,9 @@ keywords = ["fid", "bit-vector", "succinct"]
 categories = ["data-structures"]
 edition = "2021"
 
+[lib]
+name = "fid"
+
 [dependencies]
 serde = { version = "1.0", optional = true, features = ["derive"] }
 mem_dbg = { version = "0.2", optional = true }
