@@ -1,6 +1,5 @@
 /// Fully Indexable Dictionary of bits that supports rank and select operations.
 pub trait FID {
-
     /// Returns the total number of bits.
     fn len(&self) -> u64;
 
@@ -42,6 +41,18 @@ pub trait FID {
             }
         }
         s
+    }
+
+    /// Locate the position of the `(r + 1)`-th bit if it exists, returning [`None`] otherwise.
+    fn try_select(&self, b: bool, r: u64) -> Option<u64> {
+        if r == 0 {
+            return Some(0);
+        }
+        let n = self.len();
+        if self.rank(b, n - 1) < r {
+            return None;
+        };
+        Some(self.select(b, r))
     }
 
     /// Locate the position of the `(r + 1)`-th zero.
