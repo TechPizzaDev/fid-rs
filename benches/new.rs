@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate criterion;
-
 use criterion::{BenchmarkId, Criterion, Throughput};
 use fid::BitVector;
 use rand::{Rng, SeedableRng, StdRng};

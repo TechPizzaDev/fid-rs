@@ -1,6 +1,3 @@
-extern crate fid;
-extern crate rand;
-
 use fid::BitVector;
 use mem_dbg::{MemSize, SizeFlags};
 use rand::{Rng, SeedableRng, StdRng};

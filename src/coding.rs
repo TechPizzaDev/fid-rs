@@ -154,10 +154,9 @@ pub fn decode_select(b: bool, mut index: u64, k: usize, r: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    extern crate rand;
     use crate::util::mask_u64;
 
-    use self::rand::{Rng, SeedableRng, StdRng};
+    use rand::{Rng, SeedableRng, StdRng};
     use super::*;
 
     fn decode(index: u64, sblock: usize) -> u64 {

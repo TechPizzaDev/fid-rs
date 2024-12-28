@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate criterion;
-
 #[allow(dead_code)]
 #[allow(unused_imports)]
 #[path = "../src/coding.rs"]

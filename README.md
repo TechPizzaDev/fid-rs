@@ -20,8 +20,6 @@ fid = "0.1"
 ```
 then
 ```rust
-extern crate fid;
-
 use fid::{BitVector, FID};
 
 let mut bv = BitVector::new();

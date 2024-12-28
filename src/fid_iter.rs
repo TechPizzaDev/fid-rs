@@ -88,8 +88,7 @@ impl<'i, T: FID> FusedIterator for FidBitIter<'i, T> {}
 
 #[cfg(test)]
 mod tests {
-    extern crate rand;
-    use self::rand::{Rng, SeedableRng, StdRng};
+    use rand::{Rng, SeedableRng, StdRng};
     use crate::BitVector;
 
     use super::BLOCK_SIZE;

@@ -518,8 +518,7 @@ impl FromIterator<bool> for BitVector {
 
 #[cfg(test)]
 mod tests {
-    extern crate rand;
-    use self::rand::{Rng, SeedableRng, StdRng};
+    use rand::{Rng, SeedableRng, StdRng};
     use super::*;
     use crate::bit_arr;
 
