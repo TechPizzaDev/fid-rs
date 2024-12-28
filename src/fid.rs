@@ -43,16 +43,16 @@ pub trait FID {
         s
     }
 
-    /// Locate the position of the `(r + 1)`-th bit if it exists, returning [`None`] otherwise.
-    fn try_select(&self, b: bool, r: u64) -> Option<u64> {
+    /// Locate the min position of `r`-th bit 
+    /// (where rank equals `r`) if it exists, else [`None`].
+    fn min_select(&self, b: bool, r: u64) -> Option<u64> {
         if r == 0 {
             return Some(0);
         }
-        let n = self.len();
-        if self.rank(b, n - 1) < r {
+        if self.rank(b, self.len()) < r {
             return None;
         };
-        Some(self.select(b, r))
+        return Some(self.select(b, r - 1));
     }
 
     /// Locate the position of the `(r + 1)`-th zero.
