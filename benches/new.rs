@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use fid::BitVector;
 use rand::{Rng, SeedableRng, StdRng};
 

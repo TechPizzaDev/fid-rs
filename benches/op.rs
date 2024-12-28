@@ -15,7 +15,7 @@ use std::ops::Range;
 
 use coding::{encode, select0_raw};
 use criterion::{
-    black_box, measurement::WallTime, BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput,
+    black_box, criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput
 };
 use fid::{BitVector, FID};
 use rand::{Rng, SeedableRng, StdRng};
