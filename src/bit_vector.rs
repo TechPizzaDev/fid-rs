@@ -4,6 +4,7 @@ use crate::fid_iter::FidBitIter;
 use crate::util::{mask_u64, phi_sub};
 use crate::{bit_array::*, tables::*};
 use std::num::{NonZeroU32, NonZeroU8};
+use std::ops::Index;
 use std::{fmt, usize};
 
 use roxygen::*;
@@ -342,6 +343,21 @@ impl fmt::Debug for BitVector {
             write!(f, "{} ", lb)?;
         }
         Ok(())
+    }
+}
+
+static TRUE: bool = true;
+static FALSE: bool = false;
+
+impl Index<u64> for BitVector {
+    type Output = bool;
+
+    fn index(&self, index: u64) -> &Self::Output {
+        if self.get(index) {
+            &TRUE
+        } else {
+            &FALSE
+        }
     }
 }
 
