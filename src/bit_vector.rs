@@ -5,15 +5,8 @@ use crate::util::{mask_u64, phi_sub};
 use crate::{bit_array::*, tables::*};
 use std::num::{NonZeroU32, NonZeroU8};
 use std::ops::Index;
-use std::{fmt, usize};
 
 use roxygen::*;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-#[cfg(feature = "mem_dbg")]
-use mem_dbg::{MemDbg, MemSize};
 
 const SBLOCK_SIZE: u64 = 7; // ceil(log(SBLOCK_SIZE + 1))
 const LBLOCK_WIDTH: u64 = 1024;
@@ -65,8 +58,8 @@ macro_rules! bit_vec {
 /// [2] rsdic by Daisuke Okanohara.
 /// [https://github.com/hillbig/rsdic](https://github.com/hillbig/rsdic)
 #[derive(Debug, Default, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "mem_dbg", derive(MemDbg, MemSize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "mem_dbg", derive(mem_dbg::MemDbg, mem_dbg::MemSize))]
 pub struct BitVector {
     /// Length of the vector (number of bits).
     len: u64,

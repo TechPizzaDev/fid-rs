@@ -1,11 +1,3 @@
-use std::fmt;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-#[cfg(feature = "mem_dbg")]
-use mem_dbg::{MemDbg, MemSize};
-
 use crate::util::mask_u64;
 
 type Block = u64;
@@ -46,8 +38,8 @@ macro_rules! bit_arr {
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "mem_dbg", derive(MemDbg, MemSize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "mem_dbg", derive(mem_dbg::MemDbg, mem_dbg::MemSize))]
 pub struct BitArray {
     // TODO: don't use Vec; we don't need to track both cap and len
     blocks: Vec<Block>,
