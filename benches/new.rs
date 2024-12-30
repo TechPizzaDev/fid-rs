@@ -36,7 +36,6 @@ pub fn bench_push(c: &mut Criterion) {
 
 criterion_group!(
     name = benches;
-    config = Criterion::default()
-        .sample_size(50);
+    config = Criterion::default();
     targets = bench_push);
 criterion_main!(benches);

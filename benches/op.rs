@@ -15,7 +15,8 @@ use std::ops::Range;
 
 use coding::{encode, select0_raw};
 use criterion::{
-    black_box, criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup, BenchmarkId, Criterion, Throughput
+    black_box, criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
+    BenchmarkId, Criterion, Throughput,
 };
 use fid::{BitVector, FID};
 use rand::{Rng, SeedableRng, StdRng};
@@ -38,6 +39,23 @@ fn make_bitvec(rng: &mut impl Rng, n: u64, p: f64) -> BitVector {
         bv.push(b);
     }
     bv
+}
+
+pub fn bench_iter_fold(c: &mut Criterion) {
+    for n in SIZES {
+        for p in PERC {
+            let mut rng: StdRng = SeedableRng::from_seed([0; 32]);
+            let bv = make_bitvec(&mut rng, n, p);
+
+            let mut g = c.benchmark_group("iter_fold");
+            g.throughput(Throughput::Elements(bv.len() as u64));
+            g.bench_with_input(
+                BenchmarkId::from_parameter(format!("N={}, %={}", n, p * 100.0)),
+                &bv,
+                |b, bv| b.iter(|| bv.iter().fold(0, |sum, b| sum + b as u64)),
+            );
+        }
+    }
 }
 
 pub fn bench_rank1(c: &mut Criterion) {
@@ -98,7 +116,7 @@ fn bench_select0_raw(c: &mut Criterion) {
 
     for p in PERC {
         bench_lambda(&mut g, p, "lzcnt", select0_raw);
-        bench_lambda(&mut g, p, "naive", |mut bits: u64, mut r: u64| {
+        bench_lambda(&mut g, p, "naive", |mut bits: u64, mut r: u32| {
             let mut i = 0;
             while i < 64 {
                 if bits & 1 == 0 {
@@ -144,7 +162,9 @@ fn bench_select0_raw(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().sample_size(200);
-    targets = bench_rank1,
+    targets =
+    bench_iter_fold,
+    bench_rank1,
     bench_select1,
     bench_select0_raw
 );
