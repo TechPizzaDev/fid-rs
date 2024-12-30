@@ -118,7 +118,7 @@ fn bench_select0_raw(c: &mut Criterion) {
         g: &mut BenchmarkGroup<'_, WallTime>,
         p: f64,
         name: &str,
-        f: impl Fn(u64, u64) -> u64,
+        f: impl Fn(u64, u32) -> u32,
     ) {
         let parameter = format!("p={}", p * 100.0);
         g.bench_function(BenchmarkId::new(name, parameter), |b| {
@@ -127,7 +127,7 @@ fn bench_select0_raw(c: &mut Criterion) {
                 || {
                     let bits: u64 = rng.gen();
                     let k = bits.count_ones();
-                    (encode(bits, k as usize).0 as u64, k as u64)
+                    (encode(bits, k).0, k)
                 },
                 |(bits, k)| {
                     for r in 0..k {

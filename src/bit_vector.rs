@@ -215,7 +215,7 @@ impl BitVector {
         self.sblocks
             .set_word(last_sblock_pos, SBLOCK_SIZE, last_sblock as u64);
 
-        let (index, index_size) = encode(self.last_sblock_bits, last_sblock as usize);
+        let (index, index_size) = encode(self.last_sblock_bits, last_sblock);
         self.indices.set_slice(self.pointer, index_size, index);
         self.pointer += index_size;
         self.last_sblock_bits = 0;
@@ -295,9 +295,9 @@ impl BitVector {
             EncodedIndex::Zero => 0,
             EncodedIndex::Raw { bits } => bits,
             EncodedIndex::Packed { index, sblock } => {
-                let sblock = sblock.into();
+                let sblock = sblock.get().into();
                 let end = size.saturating_add((i % SBLOCK_WIDTH) as u32);
-                decode_index(index, sblock, end)
+                decode_index(index, sblock, end.get().into())
             }
         }
     }
@@ -411,14 +411,33 @@ impl FID for BitVector {
         let sblock_end_pos = i / SBLOCK_WIDTH;
         let (pointer, rank) = self.get_pointer_and_rank(i);
 
-        let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE);
+        let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE) as u32;
         let code_size = CODE_SIZE[sblock as usize] as u64;
         let index = self.indices.get_slice(pointer, code_size);
 
-        rank + decode_rank1(index, sblock as usize, i - sblock_end_pos * SBLOCK_WIDTH)
+        rank + decode_rank1(index, sblock, (i - sblock_end_pos * SBLOCK_WIDTH) as u32) as u64
     }
 
     fn select(&self, b: bool, r: u64) -> u64 {
+        if b {
+            self.select1(r)
+        } else {
+            self.select0(r)
+        }
+    }
+
+    fn select0(&self, r: u64) -> u64 {
+        self.select::<false>(r)
+    }
+
+    fn select1(&self, r: u64) -> u64 {
+        self.select::<true>(r)
+    }
+}
+
+impl BitVector {
+    #[allow(non_upper_case_globals)]
+    fn select<const b: bool>(&self, r: u64) -> u64 {
         let phi_len = phi_sub(b, self.len, self.ones);
         if phi_len <= r {
             return self.len;
@@ -431,8 +450,8 @@ impl FID for BitVector {
             let k = self.len - last_sblk_width;
             let rank = r - (phi_len - last_sblk);
             let bits = if b { !last_sblk_bits } else { last_sblk_bits };
-            let select = select0_raw(bits, rank);
-            return k + select;
+            let select = select0_raw(bits, rank as u32);
+            return k + select as u64;
         }
 
         let lblock_pos = self.find_lblock_pos(b, r);
@@ -443,20 +462,24 @@ impl FID for BitVector {
         let mut rank = phi_sub(b, LBLOCK_WIDTH * (lblock_pos as u64), lblock);
         let mut pointer = self.get_pointer(lblock_pos);
         loop {
-            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE) as usize;
+            sblock = self.sblocks.get_word(sblock_pos, SBLOCK_SIZE) as u32;
             let next_rank = rank + phi_sub(b, SBLOCK_WIDTH, sblock as u64);
             if next_rank > r {
                 break;
             }
             rank = next_rank;
-            pointer += CODE_SIZE[sblock] as u64;
+            pointer += CODE_SIZE[sblock as usize] as u64;
             sblock_pos += 1;
         }
 
-        let code_size = CODE_SIZE[sblock] as u64;
+        let code_size = CODE_SIZE[sblock as usize] as u64;
         let index = self.indices.get_slice(pointer, code_size);
-        let select_sblock = decode_select(b, index, sblock, r - rank);
-
+        let select_r = (r - rank) as u32;
+        let select_sblock = if b {
+            decode_select1(index, sblock, select_r)
+        } else {
+            decode_select0(index, sblock, select_r)
+        } as u64;
         sblock_pos * SBLOCK_WIDTH + select_sblock
     }
 }
@@ -494,9 +517,9 @@ impl FromIterator<bool> for BitVector {
 
 #[cfg(test)]
 mod tests {
-    use rand::{Rng, SeedableRng, StdRng};
     use super::*;
     use crate::bit_arr;
+    use rand::{Rng, SeedableRng, StdRng};
 
     const TEST_PROB: &[f64] = &[0.01, 0.5, 0.99];
     const TEST_SIZE: &[u64] = &[
