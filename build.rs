@@ -51,19 +51,30 @@ fn main() {
     let out_dir = Path::new(&"src");
     let mut src_file = File::create(&out_dir.join("tables.rs")).unwrap();
 
+    let useful_comb = &mut comb[..(SBLOCK_WIDTH as usize)];
+    useful_comb.reverse();
+
+    let transposed_comb: Box<[_]> = (0..65)
+        .map(|col| {
+            (0..useful_comb.len())
+                .map(|row| useful_comb[row][col])
+                .collect::<Box<[_]>>()
+        })
+        .collect();
+
     writedoc!(
         src_file,
         "
         pub const SBLOCK_WIDTH: u64 = {:?};
         const SIZE: usize = SBLOCK_WIDTH as usize + 1;
         const PADDED_WIDTH: usize = {:?};
-        pub const COMBINATION: [u64; SBLOCK_WIDTH as usize * SIZE] = {:?};
+        pub const COMBINATION: [[u64; SBLOCK_WIDTH as usize]; SIZE] = {:?};
         pub const CODE_SIZE: [u8; PADDED_WIDTH] = {:?};
         pub const AVG_CODE_SIZE: [u8; SBLOCK_WIDTH as usize] = {:?};
         ",
         SBLOCK_WIDTH,
         PADDED_WIDTH,
-        &comb.as_flattened()[..(SBLOCK_WIDTH as usize * SIZE)],
+        &transposed_comb,
         code_size,
         avg_code_size
     )

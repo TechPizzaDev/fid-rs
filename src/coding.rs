@@ -13,8 +13,7 @@ pub fn get_combination_size(
     const W: u32 = SBLOCK_WIDTH as u32;
     debug_assert!(i < W && k <= W);
 
-    let offset = (W - i - 1) * (W + 1);
-    COMBINATION[(offset + k) as usize]
+    COMBINATION[k as usize][i as usize]
 }
 
 #[roxygen]
