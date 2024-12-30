@@ -35,10 +35,15 @@ pub fn encode(
     }
 
     let mut code = 0;
-    for i in 0..SBLOCK_WIDTH as u32 {
-        if (bits >> i) & 1 > 0 {
+    let mut i = 0;
+    while (i < SBLOCK_WIDTH as u32) && (k <= SBLOCK_WIDTH as u32) {
+        let head = bits >> i;
+        if head & 1 > 0 {
             code += get_combination_size(i, k);
-            k -= 1;
+            k = k.wrapping_sub(1);
+            i += 1;
+        } else {
+            i += head.trailing_zeros();
         }
     }
     (code, code_size)
@@ -48,13 +53,15 @@ pub fn decode_index(mut index: u64, mut k: u32, p: u32) -> u64 {
     assert!(p <= SBLOCK_WIDTH as u32);
 
     let mut bits = 0;
-    for i in 0..p {
+    let mut i = 0;
+    while (i < p) && (k <= SBLOCK_WIDTH as u32) {
         let base = get_combination_size(i, k);
         if index >= base {
             index -= base;
             bits |= 1 << i;
             k = k.wrapping_sub(1);
         }
+        i += 1;
     }
     bits
 }
@@ -88,7 +95,8 @@ pub fn decode_rank1(mut index: u64, k: u32, p: u32) -> u32 {
     };
 
     let mut l = 0;
-    for i in 0..p {
+    let mut i = 0;
+    while (i < p) && (k.wrapping_sub(l) <= SBLOCK_WIDTH as u32) {
         let base = get_combination_size(i, k - l);
         if index >= base {
             index -= base;
@@ -97,6 +105,7 @@ pub fn decode_rank1(mut index: u64, k: u32, p: u32) -> u32 {
                 break;
             }
         }
+        i += 1;
     }
     l
 }
@@ -108,7 +117,8 @@ pub fn decode_select1(mut index: u64, k: u32, r: u32) -> u32 {
     }
 
     let mut l = 0;
-    for i in 0..SBLOCK_WIDTH as u32 {
+    let mut i = 0;
+    while (i < SBLOCK_WIDTH as u32) && (k.wrapping_sub(l) <= SBLOCK_WIDTH as u32) {
         let base = get_combination_size(i, k - l);
         if index >= base {
             if l == r {
@@ -117,6 +127,7 @@ pub fn decode_select1(mut index: u64, k: u32, r: u32) -> u32 {
             index -= base;
             l += 1;
         }
+        i += 1;
     }
     64
 }
@@ -128,7 +139,8 @@ pub fn decode_select0(mut index: u64, k: u32, r: u32) -> u32 {
     }
 
     let mut l = 0;
-    for i in 0..SBLOCK_WIDTH as u32 {
+    let mut i = 0;
+    while (i < SBLOCK_WIDTH as u32) && (k.wrapping_sub(l) <= SBLOCK_WIDTH as u32) {
         let base = get_combination_size(i, k - l);
         if index >= base {
             index -= base;
@@ -136,6 +148,7 @@ pub fn decode_select0(mut index: u64, k: u32, r: u32) -> u32 {
         } else if i - l == r {
             return i;
         }
+        i += 1;
     }
     64
 }
