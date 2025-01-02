@@ -1,6 +1,6 @@
 [package]
 name = "fid64-rs"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["TechPizza", "Koki Kato <koki.kato1994@gmail.com>"]
 description = "FID (Fully Indexable Dictionary) with 64-bit indices in Rust"
 repository = "https://github.com/TechPizzaDev/fid-rs"
