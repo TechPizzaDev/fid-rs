@@ -4,16 +4,12 @@
 mod coding;
 
 #[allow(dead_code)]
-#[path = "../src/tables.rs"]
-mod tables;
-
-#[allow(dead_code)]
 #[path = "../src/util.rs"]
 mod util;
 
 use std::ops::Range;
 
-use coding::{encode, select0_raw};
+use coding::{ComboTable, TABLE};
 use criterion::{
     black_box, criterion_group, criterion_main, measurement::WallTime, BatchSize, BenchmarkGroup,
     BenchmarkId, Criterion, Throughput,
@@ -115,7 +111,7 @@ fn bench_select0_raw(c: &mut Criterion) {
     let mut g = c.benchmark_group("select0_raw");
 
     for p in PERC {
-        bench_lambda(&mut g, p, "lzcnt", select0_raw);
+        bench_lambda(&mut g, p, "lzcnt", ComboTable::select0_raw);
         bench_lambda(&mut g, p, "naive", |mut bits: u64, mut r: u32| {
             let mut i = 0;
             while i < 64 {
@@ -145,7 +141,7 @@ fn bench_select0_raw(c: &mut Criterion) {
                 || {
                     let bits: u64 = rng.gen();
                     let k = bits.count_ones();
-                    (encode(bits, k).0, k)
+                    (TABLE.encode(bits, k).0, k)
                 },
                 |(bits, k)| {
                     for r in 0..k {

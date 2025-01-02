@@ -1,8 +1,8 @@
+use crate::bit_array::*;
 use crate::coding::*;
 use crate::fid::FID;
 use crate::fid_iter::FidBitIter;
 use crate::util::{mask_u64, phi_sub};
-use crate::{bit_array::*, tables::*};
 use std::num::{NonZeroU32, NonZeroU8};
 use std::ops::Index;
 
@@ -139,15 +139,13 @@ impl BitVector {
         }
     }
 
-    /// Interpolate estimates for code size. Underlying lookup is generated at build.
+    /// Estimate average code size.
     fn get_avg_code_size(true_odds: f64) -> u32 {
         let pivot = SBLOCK_WIDTH as f64 * true_odds;
-        let idx = pivot as usize;
-        let a = *AVG_CODE_SIZE.get(idx + 0).unwrap_or(&0) as f64;
-        let b = *AVG_CODE_SIZE.get(idx + 1).unwrap_or(&0) as f64;
-        let t = pivot % 1.0;
-        let lerped = a * (1.0 - t) + b * t;
-        return lerped.ceil() as u32;
+        let pivot_size = TABLE.get_code_size(pivot as u32) as u32;
+        let rounding = 4;
+        let upper_size = (pivot_size + rounding - 1) / rounding * rounding;
+        return upper_size.clamp(0, SBLOCK_WIDTH as u32);
     }
 
     #[roxygen]
@@ -215,7 +213,7 @@ impl BitVector {
         self.sblocks
             .set_word(last_sblock_pos, SBLOCK_SIZE, last_sblock as u64);
 
-        let (index, index_size) = encode(self.last_sblock_bits, last_sblock);
+        let (index, index_size) = TABLE.encode(self.last_sblock_bits, last_sblock);
         self.indices.set_slice(self.pointer, index_size, index);
         self.pointer += index_size;
         self.last_sblock_bits = 0;
@@ -254,7 +252,7 @@ impl BitVector {
     }
 
     #[inline(never)]
-    fn get_pointer_and_rank(&self, i: u64) -> (u64, u64) {
+    fn get_pointer_and_rank(&self, table: &ComboTable, i: u64) -> (u64, u64) {
         let lblock_pos = i / LBLOCK_WIDTH;
         let sblock_start_pos = lblock_pos * (LBLOCK_WIDTH / SBLOCK_WIDTH);
         let sblock_end_pos = i / SBLOCK_WIDTH;
@@ -263,19 +261,19 @@ impl BitVector {
 
         for j in sblock_start_pos..sblock_end_pos {
             let k = self.sblocks.get_word(j, SBLOCK_SIZE);
-            pointer += CODE_SIZE[k as usize] as u64;
+            pointer += table.get_code_size(k as u32);
             rank += k;
         }
         (pointer, rank)
     }
 
-    fn get_index(&self, i: u64) -> EncodedIndex {
+    fn get_index(&self, table: &ComboTable, i: u64) -> EncodedIndex {
         let sblock_end_pos = i / SBLOCK_WIDTH;
         let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE) as u8;
 
         if let Some(sblock) = NonZeroU8::new(sblock) {
-            let pointer = self.get_pointer_and_rank(i).0;
-            let code_size = CODE_SIZE[sblock.get() as usize] as u64;
+            let pointer = self.get_pointer_and_rank(table, i).0;
+            let code_size = table.get_code_size(sblock.get().into());
             let index = self.indices.get_slice(pointer, code_size);
 
             if code_size == SBLOCK_WIDTH {
@@ -290,14 +288,14 @@ impl BitVector {
 
     /// Decode bits up to end of slice (`sblock[0..(i % SBLOCK_WIDTH + size)]`).
     /// Returns whole block when not packed.
-    fn decode_sblock(&self, i: u64, size: NonZeroU32) -> u64 {
-        match self.get_index(i) {
+    fn decode_sblock(&self, table: &ComboTable, i: u64, size: NonZeroU32) -> u64 {
+        match self.get_index(table, i) {
             EncodedIndex::Zero => 0,
             EncodedIndex::Raw { bits } => bits,
             EncodedIndex::Packed { index, sblock } => {
                 let sblock = sblock.get().into();
                 let end = size.saturating_add((i % SBLOCK_WIDTH) as u32);
-                decode_index(index, sblock, end.get().into())
+                table.decode_index(index, sblock, end.get().into())
             }
         }
     }
@@ -350,7 +348,7 @@ impl FID for BitVector {
         let sblock = if excess <= last_sblock_width {
             self.last_sblock_bits
         } else {
-            self.decode_sblock(i, NonZeroU32::new(1).unwrap())
+            self.decode_sblock(&TABLE, i, NonZeroU32::new(1).unwrap())
         };
         sblock.wrapping_shr(i as u32) & 1 != 0
     }
@@ -366,17 +364,18 @@ impl FID for BitVector {
         let hi_size = slice_end.saturating_sub(hi_start);
         let lo_size = size - hi_size;
 
+        let table = TABLE.as_ref();
         let last_sblock_width = self.len % SBLOCK_WIDTH;
         let packed_len = self.len - last_sblock_width;
 
         let lo_block = if (i < packed_len) && (lo_size != 0) {
-            self.decode_sblock(i, NonZeroU32::new(lo_size as u32).unwrap())
+            self.decode_sblock(table, i, NonZeroU32::new(lo_size as u32).unwrap())
         } else {
             self.last_sblock_bits
         };
 
         let hi_block = if (hi_start < packed_len) && (hi_size != 0) {
-            self.decode_sblock(hi_start, NonZeroU32::new(hi_size as u32).unwrap())
+            self.decode_sblock(table, hi_start, NonZeroU32::new(hi_size as u32).unwrap())
         } else {
             self.last_sblock_bits
         };
@@ -392,7 +391,7 @@ impl FID for BitVector {
             let slice_end = i + size;
             assert!(slice_end <= self.len);
 
-            return self.decode_sblock(i, NonZeroU32::new(size as u32).unwrap());
+            return self.decode_sblock(&TABLE, i, NonZeroU32::new(size as u32).unwrap());
         }
         self.get_slice(i, size)
     }
@@ -408,14 +407,15 @@ impl FID for BitVector {
             return self.ones - last_ones as u64;
         }
 
+        let table = TABLE.as_ref();
         let sblock_end_pos = i / SBLOCK_WIDTH;
-        let (pointer, rank) = self.get_pointer_and_rank(i);
+        let (pointer, rank) = self.get_pointer_and_rank(table, i);
 
         let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE) as u32;
-        let code_size = CODE_SIZE[sblock as usize] as u64;
+        let code_size = table.get_code_size(sblock);
         let index = self.indices.get_slice(pointer, code_size);
 
-        rank + decode_rank1(index, sblock, (i - sblock_end_pos * SBLOCK_WIDTH) as u32) as u64
+        rank + table.decode_rank1(index, sblock, (i - sblock_end_pos * SBLOCK_WIDTH) as u32) as u64
     }
 
     fn select(&self, b: bool, r: u64) -> u64 {
@@ -450,10 +450,11 @@ impl BitVector {
             let k = self.len - last_sblk_width;
             let rank = r - (phi_len - last_sblk);
             let bits = if b { !last_sblk_bits } else { last_sblk_bits };
-            let select = select0_raw(bits, rank as u32);
+            let select = ComboTable::select0_raw(bits, rank as u32);
             return k + select as u64;
         }
 
+        let table = TABLE.as_ref();
         let lblock_pos = self.find_lblock_pos(b, r);
         let lblock = self.get_lblock(lblock_pos);
 
@@ -468,17 +469,17 @@ impl BitVector {
                 break;
             }
             rank = next_rank;
-            pointer += CODE_SIZE[sblock as usize] as u64;
+            pointer += table.get_code_size(sblock);
             sblock_pos += 1;
         }
 
-        let code_size = CODE_SIZE[sblock as usize] as u64;
+        let code_size = table.get_code_size(sblock);
         let index = self.indices.get_slice(pointer, code_size);
         let select_r = (r - rank) as u32;
         let select_sblock = if b {
-            decode_select1(index, sblock, select_r)
+            table.decode_select1(index, sblock, select_r)
         } else {
-            decode_select0(index, sblock, select_r)
+            table.decode_select0(index, sblock, select_r)
         } as u64;
         sblock_pos * SBLOCK_WIDTH + select_sblock
     }

@@ -25,11 +25,6 @@ rand = "0.5"
 bincode = "1.3"
 criterion = "0.5"
 
-[build-dependencies]
-indoc = "2"
-distrs = "0.2"
-roxygen = "0.1"
-
 [features]
 serde = ["dep:serde"]
 mem_dbg = ["dep:mem_dbg"]

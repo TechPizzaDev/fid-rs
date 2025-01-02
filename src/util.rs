@@ -14,3 +14,8 @@ pub const fn phi_sub(b: bool, w: u64, r: u64) -> u64 {
         w - r
     }
 }
+
+#[inline(always)]
+pub const fn log2(x: u64) -> u32 {
+    (u64::BITS - 1) - (x | 1).leading_zeros()
+}
