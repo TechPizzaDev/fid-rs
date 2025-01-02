@@ -9,11 +9,11 @@ const ROWS: usize = SBLOCK_WIDTH as usize + 1;
 const ROWS_PADDED: usize = ROWS.next_power_of_two();
 
 /// TODO: describe threshold
-const MAX_CODE_SIZE: usize = 48;
+const MAX_CODE_SIZE: u32 = 48;
 
 type CodeSizes = [u8; ROWS_PADDED];
-type CodeRow = [u64; ROWS];
-type CodeMatrix = [CodeRow; SBLOCK_WIDTH as usize];
+type CodeRow = [u64; SBLOCK_WIDTH as usize];
+type CodeMatrix = [CodeRow; ROWS];
 
 // Box is required to not bloat exe with zeros.
 pub static TABLE: LazyLock<Box<ComboTable>> = LazyLock::new(|| {
@@ -31,7 +31,7 @@ impl Default for ComboTable {
     fn default() -> Self {
         Self {
             sizes: [0; ROWS_PADDED],
-            matrix: [[0; ROWS]; SBLOCK_WIDTH as usize],
+            matrix: [[0; SBLOCK_WIDTH as usize]; ROWS],
         }
     }
 }
@@ -41,7 +41,7 @@ impl ComboTable {
     pub fn get_code_size(&self, i: u32) -> u64 {
         *self.sizes.get(i as usize).unwrap_or(&0) as u64
     }
-    
+
     #[inline(always)]
     #[roxygen]
     fn get_combination_size(
@@ -54,7 +54,7 @@ impl ComboTable {
         const W: u32 = SBLOCK_WIDTH as u32;
         debug_assert!(i < W && k <= W);
 
-        self.matrix[i as usize][k as usize]
+        self.matrix[k as usize][i as usize]
     }
 
     #[roxygen]
@@ -196,42 +196,37 @@ impl ComboTable {
     }
 }
 
-const fn get_matrix_row(matrix: &mut CodeMatrix, i: usize) -> &mut CodeRow {
-    &mut matrix[matrix.len() - i - 1]
-}
+const fn generate_table(table: &mut ComboTable) {
+    let matrix = &mut table.matrix;
+    let sizes = &mut table.sizes;
 
-const fn generate_table_matrix(matrix: &mut CodeMatrix) {
-    let mut n = 0;
-    while n < SBLOCK_WIDTH as usize {
-        get_matrix_row(matrix, n)[0] = 1;
-        let mut r = 1;
-        while r <= n {
-            let prev_row = get_matrix_row(matrix, n - 1);
-            get_matrix_row(matrix, n)[r] = prev_row[r - 1] + prev_row[r];
-            r += 1;
-        }
-        n += 1;
+    let mut i = 0;
+    while i < SBLOCK_WIDTH as usize {
+        matrix[0][i] = 1;
+        i += 1;
     }
-}
 
-const fn generate_table_sizes(sizes: &mut CodeSizes, matrix: &mut CodeMatrix) {
-    let last_row = get_matrix_row(matrix, matrix.len() - 1);
-    let mut n = 1;
-    while n < SBLOCK_WIDTH as usize {
-        let val = last_row[n - 1] + last_row[n];
-        let size = log2(val - 1) as usize + 1;
-        sizes[n] = if size <= MAX_CODE_SIZE {
+    let mut y = 1;
+    while y < SBLOCK_WIDTH as usize {
+        // Prefix sum of previous row excluding the last element, 
+        // stored in reverse for optimal read-access.
+        let mut x = SBLOCK_WIDTH as usize - 1 - 1;
+        while x < SBLOCK_WIDTH as usize {
+            matrix[y][x] = matrix[y - 1][x + 1] + matrix[y][x + 1];
+            x = x.wrapping_sub(1);
+        }
+
+        // Calculating size after row is 2x faster than doing it in a separate function.
+        let val = matrix[y - 1][0] + matrix[y][0];
+        let size = log2(val - 1) + 1;
+        sizes[y] = if size <= MAX_CODE_SIZE {
             size as u8
         } else {
             SBLOCK_WIDTH as u8
         };
-        n += 1;
-    }
-}
 
-const fn generate_table(table: &mut ComboTable) {
-    generate_table_matrix(&mut table.matrix);
-    generate_table_sizes(&mut table.sizes, &mut table.matrix);
+        y += 1;
+    }
 }
 
 #[cfg(test)]
