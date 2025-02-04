@@ -3,7 +3,8 @@ use crate::coding::*;
 use crate::fid::FID;
 use crate::fid_iter::FidBitIter;
 use crate::util::{mask_u64, phi_sub};
-use std::num::{NonZeroU32, NonZeroU8};
+use std::hint::black_box;
+use std::num::NonZeroU32;
 use std::ops::Index;
 
 use roxygen::*;
@@ -250,7 +251,7 @@ impl BitVector {
     fn get_pointer(&self, pos: usize) -> u64 {
         *self.pointers.get(pos.wrapping_sub(1)).unwrap_or(&0)
     }
-
+    
     #[inline(never)]
     fn get_pointer_and_rank(&self, table: &ComboTable, i: u64) -> (u64, u64) {
         let lblock_pos = i / LBLOCK_WIDTH;
@@ -262,42 +263,30 @@ impl BitVector {
         for j in sblock_start_pos..sblock_end_pos {
             let k = self.sblocks.get_word(j, SBLOCK_SIZE);
             pointer += table.get_code_size(k as u32);
-            rank += k;
+            rank += black_box(k); // prevent eager autovectorization
         }
         (pointer, rank)
     }
 
-    fn get_index(&self, table: &ComboTable, i: u64) -> EncodedIndex {
-        let sblock_end_pos = i / SBLOCK_WIDTH;
-        let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE) as u8;
-
-        if let Some(sblock) = NonZeroU8::new(sblock) {
-            let pointer = self.get_pointer_and_rank(table, i).0;
-            let code_size = table.get_code_size(sblock.get().into());
-            let index = self.indices.get_slice(pointer, code_size);
-
-            if code_size == SBLOCK_WIDTH {
-                EncodedIndex::Raw { bits: index }
-            } else {
-                EncodedIndex::Packed { index, sblock }
-            }
-        } else {
-            EncodedIndex::Zero
-        }
-    }
-
     /// Decode bits up to end of slice (`sblock[0..(i % SBLOCK_WIDTH + size)]`).
     /// Returns whole block when not packed.
-    fn decode_sblock(&self, table: &ComboTable, i: u64, size: NonZeroU32) -> u64 {
-        match self.get_index(table, i) {
-            EncodedIndex::Zero => 0,
-            EncodedIndex::Raw { bits } => bits,
-            EncodedIndex::Packed { index, sblock } => {
-                let sblock = sblock.get().into();
-                let end = size.saturating_add((i % SBLOCK_WIDTH) as u32);
-                table.decode_index(index, sblock, end.get().into())
-            }
+    fn decode_sblock(&self, i: u64, size: NonZeroU32) -> u64 {
+        let sblock_end_pos = i / SBLOCK_WIDTH;
+        let sblock = self.sblocks.get_word(sblock_end_pos, SBLOCK_SIZE) as u32;
+        if sblock == 0 {
+            return 0;
         }
+
+        let table = TABLE.as_ref();
+        let pointer = self.get_pointer_and_rank(table, i).0;
+        let code_size = table.get_code_size(sblock);
+        let index = self.indices.get_slice(pointer, code_size);
+        if code_size == SBLOCK_WIDTH {
+            return index;
+        }
+
+        let end = size.saturating_add((i % SBLOCK_WIDTH) as u32);
+        table.decode_index(index, sblock, end.get().into())
     }
 
     fn find_lblock_pos(&self, b: bool, r: u64) -> usize {
@@ -312,12 +301,6 @@ impl BitVector {
         }
         lblock_pos
     }
-}
-
-enum EncodedIndex {
-    Zero,
-    Raw { bits: u64 },
-    Packed { index: u64, sblock: NonZeroU8 },
 }
 
 static TRUE: bool = true;
@@ -348,7 +331,7 @@ impl FID for BitVector {
         let sblock = if excess <= last_sblock_width {
             self.last_sblock_bits
         } else {
-            self.decode_sblock(&TABLE, i, NonZeroU32::new(1).unwrap())
+            self.decode_sblock(i, NonZeroU32::new(1).unwrap())
         };
         sblock.wrapping_shr(i as u32) & 1 != 0
     }
@@ -364,18 +347,17 @@ impl FID for BitVector {
         let hi_size = slice_end.saturating_sub(hi_start);
         let lo_size = size - hi_size;
 
-        let table = TABLE.as_ref();
         let last_sblock_width = self.len % SBLOCK_WIDTH;
         let packed_len = self.len - last_sblock_width;
 
         let lo_block = if (i < packed_len) && (lo_size != 0) {
-            self.decode_sblock(table, i, NonZeroU32::new(lo_size as u32).unwrap())
+            self.decode_sblock(i, NonZeroU32::new(lo_size as u32).unwrap())
         } else {
             self.last_sblock_bits
         };
 
         let hi_block = if (hi_start < packed_len) && (hi_size != 0) {
-            self.decode_sblock(table, hi_start, NonZeroU32::new(hi_size as u32).unwrap())
+            self.decode_sblock(hi_start, NonZeroU32::new(hi_size as u32).unwrap())
         } else {
             self.last_sblock_bits
         };
@@ -391,7 +373,7 @@ impl FID for BitVector {
             let slice_end = i + size;
             assert!(slice_end <= self.len);
 
-            return self.decode_sblock(&TABLE, i, NonZeroU32::new(size as u32).unwrap());
+            return self.decode_sblock(i, NonZeroU32::new(size as u32).unwrap());
         }
         self.get_slice(i, size)
     }
@@ -522,7 +504,7 @@ mod tests {
     use crate::bit_arr;
     use rand::{Rng, SeedableRng, StdRng};
 
-    const TEST_PROB: &[f64] = &[0.01, 0.5, 0.99];
+    const TEST_PROB: &[f64] = &[0.0, 0.01, 0.5, 0.99, 1.0];
     const TEST_SIZE: &[u64] = &[
         1,
         SBLOCK_WIDTH / 2,
